@@ -23,7 +23,7 @@
 
 ## Detailed Sweep Findings (updated 2026-07-28)
 
-- **vlad image pipeline unblocked**: `containers/envs/vlad/image/sources-lock.json` is `status: blocked` with 6 unresolved categories. Resolve the hpc-benchmarks 26.02 digests, add and lock the `nvidia_nemo_oci` category for the NeMo base, then flip the lock to `complete` (see docs/ci-github-actions.md open items).
+- **image pipeline lock unblocked**: `containers/images/sources-lock.json` is `status: blocked` with 6 unresolved categories (the `ubuntu_base_oci` category for the `ubuntu-hpcsim` base is resolved). Resolve the remaining `nvidia_hpc_benchmarks_oci` digests (needs skopeo + NGC reachability on a builder) plus the Ubuntu snapshot/package/tool/runner categories, then flip the lock to `complete` (see docs/ci-github-actions.md open items).
 - **chapar_plus overlay**: Contains one real overlay package (`perl_module_build_tiny`, the `#!perl` shebang fix) plus the skeleton examples (`chapar_source_example`, `chapar_binary_only_example`), which are still slated for removal.
 - **Disabled hpcsim specs**: ~15-20 root specs are commented out in `envs/hpcsim/spack.yaml`, including the visualization stack (Paraview, VisIt, VTK, VTK-m), Catalyst, older MPI implementations, and Python 3.13/3.14. These are intentionally parked but should be reviewed periodically.
 - **release.sh drift**: `envs/hpcsim/release.sh` and `envs/vlad/release.sh` are hand-synced copies that have already diverged (root-privilege fallback, module spec formats, multi-arch promotion, failure-handling strictness, historically divergent paths in `cmd_build`). Extract the shared logic into a sourced library before adding a third environment.

@@ -3,37 +3,44 @@ set -euo pipefail
 
 usage() {
     cat <<'USAGE'
-Usage: containers/envs/vlad/image/build-image.sh \
-  --target linux-x86_64-v4 \
-  [--base hpl|nemo] \
-  --release-dir /resources/chapar/vlad/<os>/<arch>/releases/<release-id> \
+Usage: containers/images/build-image.sh \
+  --base nvidia-vlad --target linux-x86_64-v4 \
+  --release-dir /resources/chapar/<env>/<os>/<arch>/releases/<release-id> \
   --image-id <image-id> \
   --candidate-root /resources/chapar/vlad-image/candidates \
   [--enroot-build-root DIR] [--keep-container] [--plan-only]
 
-Layer a promoted Chapar vlad release into a digest-locked NVIDIA base image and
+Layer a promoted Chapar environment release into a digest-locked base image and
 export an Enroot squashfs (.sqsh) that Pyxis consumes via
-`srun --container-image=<path>`. The vlad stack ships in two bases, each built
-for both targets (linux-x86_64-v4, linux-aarch64-gb300):
+`srun --container-image=<path>`. Each selected container pairs one base image
+with one Chapar environment and its own target list:
 
-  --base hpl    NVIDIA HPC-benchmarks 26.02 (default)
-  --base nemo   NVIDIA NeMo / dgxc-exemplar training lineage; fails closed
-                until its OCI digests are added to sources-lock.json
+  --base nvidia-vlad   NVIDIA HPC-benchmarks 26.02 (default) + the vlad env.
+                        Targets: linux-x86_64-v4, linux-aarch64-gb300.
+  --base ubuntu-hpcsim Plain Ubuntu 24.04 + the hpcsim env. hpcsim policy
+                        builds its own CUDA/GDR stack via Spack rather than
+                        relying on an NVIDIA-branded OS image, so the base
+                        stays vendor-neutral. Targets: linux-x86_64-generic.
+
+The release directory's own metadata.txt must match the selected base's
+environment (env_path) — pointing --base nvidia-vlad at an hpcsim release, or
+vice versa, fails closed rather than producing a mismatched image.
 
 What is injected: the environment's explicit root specs plus their transitive
 link/run dependency closure, each copied to the SAME absolute prefix it was
 built at. Spack embeds absolute RPATHs, so a prefix moved to a different path
 would not resolve at run time. Build-only dependencies are excluded.
 
-MPI precedence: the base image's own MPI stays first on PATH so the NVIDIA HPL
-and NCCL entrypoints under /workspace keep working untouched. The vlad stack is
-reachable only after an explicit `module load`.
+Module precedence: injected modules are reachable only via an explicit
+`module load` after `module use`; nothing already present in the base image's
+PATH or LD_LIBRARY_PATH is disturbed.
 
 The base image is resolved by digest from sources-lock.json, never by tag: the
 lock's floating_input_rule forbids tags as locked values. This script therefore
 refuses to run until that lock reaches status "complete", which requires
-resolving the 26.02 index and per-platform descriptors on a builder with skopeo
-and nvcr.io reachability.
+resolving every locked category's index and per-platform descriptors on a
+builder with skopeo (and registry credentials/reachability where the base
+requires them).
 
 --plan-only prints the resolved base digest, injection prefix list, and output
 path, then exits without importing, mutating, or writing anything. It is the
@@ -70,31 +77,36 @@ TARGETS_PATH = SCRIPT_DIR / "targets.json"
 SOURCES_PATH = SCRIPT_DIR / "sources-lock.json"
 LOCK_VALIDATOR = SCRIPT_DIR / "tests" / "validate-locks.sh"
 
-# The vlad stack ships in two container lineages, each built per target
-# architecture (linux-x86_64-v4 and linux-aarch64-gb300):
-#   hpl  — NVIDIA HPC-benchmarks 26.02, the tuned HPL/NCCL benchmark base.
-#   nemo — NVIDIA NeMo training lineage (fleet-manager's dgxc-exemplar base).
-# Each base must be digest-locked in sources-lock.json under its own category.
-# `nemo` fails closed until that category is added to the lock and its
-# validator ("no verified NVIDIA platform descriptor"), which is the intended
-# adoption path — never import a base by tag.
+# Each selected container is one (base image, Chapar environment) pairing.
+# `targets` is an allow-list checked against containers/images/targets.json --
+# a base is not required to support every registered target (hpcsim has no
+# aarch64 policy, so ubuntu-hpcsim only ever builds linux-x86_64-generic).
+# Every base must be digest-locked in sources-lock.json under its own
+# lock_category before a real (non --plan-only) build can run; never import a
+# base by tag.
 BASES: Final = {
-    "hpl": {
+    "nvidia-vlad": {
         "image": "nvcr.io/nvidia/hpc-benchmarks",
         "tag": "26.02",
         "lock_category": "nvidia_hpc_benchmarks_oci",
+        "env": "vlad",
+        "env_path": "envs/vlad",
+        "targets": ("linux-x86_64-v4", "linux-aarch64-gb300"),
     },
-    "nemo": {
-        "image": "nvcr.io/nvidia/nemo",
-        "tag": "25.09.00",
-        "lock_category": "nvidia_nemo_oci",
+    "ubuntu-hpcsim": {
+        "image": "ubuntu",
+        "tag": "24.04",
+        "lock_category": "ubuntu_base_oci",
+        "env": "hpcsim",
+        "env_path": "envs/hpcsim",
+        "targets": ("linux-x86_64-generic",),
     },
 }
 # Where the generated modulefiles land inside the image. Deliberately outside
 # /resources so the module tree is image-owned while the store keeps its
 # build-time absolute path.
 IMAGE_MODULE_ROOT: Final = "/opt/chapar/modulefiles"
-PROFILE_SCRIPT: Final = "/etc/profile.d/zz-chapar-vlad-image.sh"
+PROFILE_SCRIPT: Final = "/etc/profile.d/zz-chapar-image.sh"
 DIGEST_RE: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
 ID_RE: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 # Link/run edges carry the runtime closure. Build-only deps (cmake, ninja,
@@ -183,14 +195,14 @@ def resolve_base_descriptor(base: dict[str, str], target: str) -> str:
         descriptor = platform["descriptor_digest"]
     except (KeyError, TypeError):
         fail(
-            f"source lock has no verified NVIDIA platform descriptor for base "
+            f"source lock has no verified platform descriptor for base "
             f"{base['image']}:{base['tag']} (category {base['lock_category']}) "
             f"and target {target}"
         )
     if oci.get("image") != base["image"] or oci.get("tag") != base["tag"]:
         fail(f"source lock {base['lock_category']} identity is not the approved {base['image']}:{base['tag']} source")
     if not isinstance(descriptor, str) or DIGEST_RE.fullmatch(descriptor) is None:
-        fail(f"NVIDIA platform descriptor for {target} is not an immutable sha256 digest")
+        fail(f"platform descriptor for {target} is not an immutable sha256 digest")
     return descriptor
 
 
@@ -237,7 +249,7 @@ def read_metadata(release_dir: Path) -> dict[str, str]:
             continue
         key, _, value = line.partition(":")
         metadata[key.strip()] = value.strip()
-    for required in ("release_id", "os", "arch", "store"):
+    for required in ("release_id", "os", "arch", "store", "env_path"):
         if not metadata.get(required):
             fail(f"release metadata is missing required field: {required}")
     return metadata
@@ -338,7 +350,7 @@ def rootfs_path(data_path: Path, container: str, absolute_target: Path) -> Path:
     return data_path / container / str(absolute_target).lstrip("/")
 
 
-def inject(data_path: Path, container: str, prefixes: list[Path], release_dir: Path, arch: str) -> None:
+def inject(data_path: Path, container: str, prefixes: list[Path], release_dir: Path, arch: str, base: dict[str, str]) -> None:
     print(f"==> injecting {len(prefixes)} prefixes at their build-time paths")
     for prefix in prefixes:
         destination = rootfs_path(data_path, container, prefix)
@@ -358,15 +370,15 @@ def inject(data_path: Path, container: str, prefixes: list[Path], release_dir: P
         run(["cp", "-a", str(modules_source), str(modules_destination)], "injecting modulefiles")
 
     # Opt-in by design: `module use` only, never a PATH/LD_LIBRARY_PATH prepend.
-    # The base image's MPI, HPL, and NCCL entrypoints must keep resolving to the
-    # NVIDIA stack they were linked against.
+    # Anything already on PATH/LD_LIBRARY_PATH in the base image (e.g. the
+    # NVIDIA base's own MPI/HPL/NCCL under /workspace) keeps resolving to what
+    # it was linked against.
     profile = rootfs_path(data_path, container, Path(PROFILE_SCRIPT))
     profile.parent.mkdir(parents=True, exist_ok=True)
     profile.write_text(
-        "# Chapar vlad release, layered into this image.\n"
-        "# Deliberately does not alter PATH or LD_LIBRARY_PATH: the NVIDIA base\n"
-        "# MPI stays the default so /workspace HPL and NCCL keep working. Run\n"
-        "# `module avail` then `module load <name>` to use the vlad stack.\n"
+        f"# Chapar {base['env']} release, layered into this image.\n"
+        "# Deliberately does not alter PATH or LD_LIBRARY_PATH. Run\n"
+        f"# `module avail` then `module load <name>` to use the {base['env']} stack.\n"
         f'if command -v module >/dev/null 2>&1 && [ -d "{IMAGE_MODULE_ROOT}/{arch}" ]; then\n'
         f'    module use "{IMAGE_MODULE_ROOT}/{arch}"\n'
         "fi\n",
@@ -385,17 +397,22 @@ def verify(enroot: str, container: str, arch: str, spack_target: str, base_id: s
         )
     # Base-specific evidence that injection did not disturb the payload the
     # base image exists to provide.
-    if base_id == "hpl":
-        # The base image's own HPL entrypoint must survive injection.
+    if base_id == "nvidia-vlad":
+        # The NVIDIA HPC-benchmarks base's own HPL entrypoint must survive
+        # injection -- confirms we layered vlad on top rather than clobbering it.
         base_check = (
             'case "$(uname -m)" in\n'
             '  x86_64) test -f /workspace/hpl-linux-x86_64/hpl.sh ;;\n'
             '  aarch64) test -f /workspace/hpl-linux-aarch64-gpu/hpl.sh ;;\n'
             'esac\n'
         )
-    elif base_id == "nemo":
-        # The NeMo lineage must keep its Python stack importable.
-        base_check = 'python -c "import nemo" >/dev/null 2>&1 || python3 -c "import nemo"\n'
+    elif base_id == "ubuntu-hpcsim":
+        # Confirms the base is still a genuine, uncorrupted Ubuntu 24.04
+        # rootfs after injection -- apt/dpkg intact, correct OS release.
+        base_check = (
+            'grep -q \'VERSION_ID="24.04"\' /etc/os-release\n'
+            'command -v dpkg >/dev/null 2>&1\n'
+        )
     else:
         fail(f"no in-image verification defined for base {base_id!r}")
     # NVIDIA_VISIBLE_DEVICES=void keeps enroot's GPU hook from running
@@ -421,9 +438,9 @@ def verify(enroot: str, container: str, arch: str, spack_target: str, base_id: s
 # ----------------------------------------------------------------------- main --
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Layer a Chapar vlad release into a digest-locked NVIDIA base image")
+    parser = argparse.ArgumentParser(description="Layer a Chapar environment release into a digest-locked base image")
     parser.add_argument("--target", required=True)
-    parser.add_argument("--base", default="hpl", choices=tuple(BASES))
+    parser.add_argument("--base", default="nvidia-vlad", choices=tuple(BASES))
     parser.add_argument("--release-dir", required=True)
     parser.add_argument("--image-id", required=True)
     parser.add_argument("--candidate-root")
@@ -441,22 +458,34 @@ def main() -> int:
     if not args.plan_only and not args.candidate_root:
         fail("--candidate-root is required unless --plan-only is given")
 
+    base = BASES[args.base]
+    if args.target not in base["targets"]:
+        fail(
+            f"base {args.base!r} does not support target {args.target!r}; "
+            f"it supports: {', '.join(base['targets'])}"
+        )
+
     release_dir = absolute(args.release_dir, "release dir")
     if not release_dir.is_dir():
         fail(f"release dir is not a directory: {release_dir}")
     metadata = read_metadata(release_dir)
     arch = metadata["arch"]
     store = absolute(metadata["store"], "release store")
+    if metadata["env_path"] != base["env_path"]:
+        fail(
+            f"release at {release_dir} was built from {metadata['env_path']!r}, "
+            f"but base {args.base!r} is for {base['env_path']!r} ({base['env']}). "
+            "Point --release-dir at a release of the matching environment."
+        )
 
-    base = BASES[args.base]
     descriptor = resolve_base_descriptor(base, args.target)
     closure = runtime_closure(release_dir)
     prefixes = resolve_prefixes(store, closure)
 
-    artifact_name = f"vlad-{args.base}+{base['tag']}-{args.target}.sqsh"
+    artifact_name = f"{args.base}+{base['tag']}-{args.target}.sqsh"
     if args.plan_only:
         print(f"target:        {args.target} ({target_spec['oci_platform']}, spack_target={target_spec['spack_target']})")
-        print(f"base id:       {args.base}")
+        print(f"base id:       {args.base} (env={base['env']})")
         print(f"release:       {metadata['release_id']} arch={arch}")
         print(f"base:          {base['image']}@{descriptor}")
         print(f"store:         {store}")
@@ -484,11 +513,11 @@ def main() -> int:
     os.environ["ENROOT_RUNTIME_PATH"] = str(build_root / "runtime")
 
     base_sqsh = import_base(base, descriptor, build_root / "cache", args.target)
-    container = f"vladbuild-{args.base}-{args.target}-{os.getpid()}"
+    container = f"chaparbuild-{args.base}-{args.target}-{os.getpid()}"
     subprocess.run([enroot, "remove", "-f", container], capture_output=True, check=False)
     run([enroot, "create", "--name", container, str(base_sqsh)], "enroot create")
     try:
-        inject(build_root / "data", container, prefixes, release_dir, arch)
+        inject(build_root / "data", container, prefixes, release_dir, arch, base)
         verify(enroot, container, arch, target_spec["spack_target"], args.base)
         out = work / artifact_name
         partial = out.with_suffix(f".sqsh.partial.{os.getpid()}")
@@ -511,7 +540,7 @@ def main() -> int:
 try:
     sys.exit(main())
 except BuildError as error:
-    print(f"vlad image build failed: {error}", file=sys.stderr)
+    print(f"chapar image build failed: {error}", file=sys.stderr)
     sys.exit(1)
 except KeyboardInterrupt:
     sys.exit(130)

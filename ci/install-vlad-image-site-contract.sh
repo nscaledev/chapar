@@ -44,7 +44,7 @@ from typing import Any, Final
 
 SCRIPT_DIR = Path(sys.argv[1])
 REPOSITORY_ROOT = SCRIPT_DIR.parent
-TRACKED_SCHEMA = REPOSITORY_ROOT / "containers/envs/vlad/image/site-contract.schema.json"
+TRACKED_SCHEMA = REPOSITORY_ROOT / "containers/images/site-contract.schema.json"
 PRODUCTION_DESTINATION = Path("/etc/chapar/vlad-image/site-contract.json")
 EXPECTED_SCHEMA_ID: Final = "https://nscaledev.github.io/chapar/schemas/vlad-image-site-contract/v1"
 SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")

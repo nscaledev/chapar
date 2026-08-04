@@ -32,27 +32,29 @@ re-concretizes:
   silently emit v4 binaries.
 
 The matching image target is `linux-x86_64-v4` in
-`containers/envs/vlad/image/targets.json`; its runtime preflight requires CPUID and
+`containers/images/targets.json`; its runtime preflight requires CPUID and
 ELF `x86-64-v4` evidence. The portable `linux-x86_64-generic` target and its
-`x86-64-v1` contract are unchanged.
+`x86-64-v1` contract are unchanged (and is what hpcsim's `ubuntu-hpcsim`
+container builds on — see `containers/README.md`).
 
 ## Container delivery
 
-Vlad is delivered as Pyxis images, not only as an NFS release tree: the
-promoted release's runtime closure is injected into a digest-locked NVIDIA
-base. The primary deliverable is the NVIDIA HPC-benchmarks 26.02 base built for
-both architectures; a secondary NeMo lineage is a fail-closed slot:
+Vlad is delivered as a Pyxis image, not only as an NFS release tree: the
+promoted release's runtime closure is injected into the digest-locked
+**NVIDIA HPC-benchmarks 26.02** base (id `nvidia-vlad`, the pipeline's
+default), built for both architectures:
 
-| Base | Lineage | Targets | Status |
-|------|---------|---------|--------|
-| `hpl` (default) | NVIDIA HPC-benchmarks 26.02 | `linux-x86_64-v4`, `linux-aarch64-gb300` | primary |
-| `nemo` | NVIDIA NeMo / dgxc-exemplar training image | `linux-x86_64-v4`, `linux-aarch64-gb300` | fails closed until digests are locked |
+| Base id | Base image | Targets |
+|---|---|---|
+| `nvidia-vlad` | NVIDIA HPC-benchmarks 26.02 | `linux-x86_64-v4`, `linux-aarch64-gb300` |
 
-Build with `containers/envs/vlad/image/build-image.sh --base <hpl|nemo> --target
-<target> ...` on a builder of the matching architecture. The `nemo` base fails
-closed until its OCI digests are added to
-`containers/envs/vlad/image/sources-lock.json`. The proposed CI wiring is in
-`docs/ci-github-actions.md`.
+Build with `containers/images/build-image.sh --base nvidia-vlad --target
+<target> ...` on a builder of the matching architecture. This base's own
+`nvidia_hpc_benchmarks_oci` category in `containers/images/sources-lock.json`
+is still unresolved, so the build fails closed until it is locked. See
+`containers/README.md` for the shared image pipeline (it also serves hpcsim's
+`ubuntu-hpcsim` container) and `docs/ci-github-actions.md` for the proposed CI
+wiring.
 
 ## Building Vlad
 

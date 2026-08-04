@@ -68,14 +68,21 @@ X86_ISA_LEVEL: Final = {
     "linux-x86_64-generic": "x86-64-v1",
     "linux-x86_64-v4": "x86-64-v4",
 }
-# Pinned builder toolchain per target. The generic and gb300 targets keep the
-# docker/buildx path. linux-x86_64-v4 uses the enroot-only path that
-# fleet-manager's images/build.sh uses (enroot import/create/start/export), so
-# it must not demand a Docker daemon on the builder.
+# Pinned builder toolchain per target. Every target uses the enroot-only path
+# that fleet-manager's images/build.sh uses (enroot import/create/start/
+# export) and that build-image.sh implements -- none of them need a Docker
+# daemon on the builder.
 BUILD_TOOLS: Final = {
-    "linux-x86_64-generic": ("docker-buildx", "buildkit", "enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
+    "linux-x86_64-generic": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
     "linux-x86_64-v4": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
-    "linux-aarch64-gb300": ("docker-buildx", "buildkit", "enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
+    "linux-aarch64-gb300": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
+}
+# Which locked OCI category and registry image each selected container's base
+# comes from. Kept in sync with containers/images/build-image.sh's BASES dict;
+# preflight only needs the two fields it probes with here.
+BASES: Final = {
+    "nvidia-vlad": {"lock_category": "nvidia_hpc_benchmarks_oci", "image": "nvcr.io/nvidia/hpc-benchmarks"},
+    "ubuntu-hpcsim": {"lock_category": "ubuntu_base_oci", "image": "ubuntu"},
 }
 ROLE_BY_MODE: Final = {"build": "builders", "runtime": "validators", "publisher": "publishers"}
 RUNTIME_FEATURES: Final = {
@@ -326,8 +333,6 @@ def verify_pinned_tools(source_lock: dict[str, Any], identities: tuple[str, ...]
     by_id = {entry["id"]: entry for entry in entries}
     commands: dict[str, str] = {}
     version_commands = {
-        "docker-buildx": lambda found: [found["docker"], "buildx", "version"],
-        "buildkit": lambda found: [found["buildctl"], "--version"],
         "enroot": lambda found: [found["enroot"], "version"],
         "squashfs-tools": lambda found: [found["mksquashfs"], "-version"],
         "zstd": lambda found: [found["zstd"], "--version"],
@@ -579,6 +584,7 @@ def probe_publisher_durability(path: Path, record: dict[str, Any], test_mode: bo
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fail-closed native Vlad HPL image host preflight")
     parser.add_argument("--target", required=True, choices=tuple(EXPECTED_TARGETS))
+    parser.add_argument("--base", default="nvidia-vlad", choices=tuple(BASES))
     parser.add_argument("--image-id", required=True)
     parser.add_argument("--sha256")
     parser.add_argument("--candidate-root", required=True)
@@ -708,11 +714,9 @@ def main() -> int:
         if free_bytes < minimum_free:
             fail("candidate work root has insufficient free space")
         if not test_mode:
-            if "docker-buildx" in BUILD_TOOLS[args.target]:
-                run_probe([tools["docker"], "buildx", "version"], timeout_seconds)
-                run_probe([tools["docker"], "info"], timeout_seconds)
-            descriptor = source_lock["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"][args.target]["descriptor_digest"]
-            run_probe([tools["skopeo"], "inspect", f"docker://nvcr.io/nvidia/hpc-benchmarks@{descriptor}"], timeout_seconds)
+            base = BASES[args.base]
+            descriptor = source_lock["verified"][base["lock_category"]]["platforms"][args.target]["descriptor_digest"]
+            run_probe([tools["skopeo"], "inspect", f"docker://{base['image']}@{descriptor}"], timeout_seconds)
         capabilities = {"candidate_filesystem": candidate_fs.get("fstype"), "free_bytes": free_bytes, "required_tools": sorted(tools)}
     elif args.mode == "runtime":
         runtime_tools = ("srun", "enroot", "python3", "lscpu") if args.target in X86_ISA_LEVEL else ("srun", "enroot", "python3", "nvidia-smi")

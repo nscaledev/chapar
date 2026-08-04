@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
-PREFLIGHT="${ROOT_DIR}/containers/envs/vlad/image/preflight.sh"
-SCHEMA="${ROOT_DIR}/containers/envs/vlad/image/site-contract.schema.json"
-EXAMPLE="${ROOT_DIR}/containers/envs/vlad/image/site-contract.example.json"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PREFLIGHT="${ROOT_DIR}/containers/images/preflight.sh"
+SCHEMA="${ROOT_DIR}/containers/images/site-contract.schema.json"
+EXAMPLE="${ROOT_DIR}/containers/images/site-contract.example.json"
 TMP_BASE="$(mktemp -d "${TMPDIR:-/tmp}/vlad-image-preflight.XXXXXX")"
 TMP_BASE="$(cd "${TMP_BASE}" && pwd -P)"
 # The fixture deliberately chmods image roots to 0555 to exercise the
@@ -43,7 +43,7 @@ for tool in docker docker-buildx buildctl enroot mksquashfs unsquashfs skopeo sy
   chmod 0755 "${TOOLS}/${tool}"
 done
 
-python3 - "${ROOT_DIR}/containers/envs/vlad/image/sources-lock.json" "${SOURCE_LOCK}" "${MACHINE_ID}" "${CONTRACT}" "${INVENTORY}" "${FILESYSTEMS}" "${FIXTURE}" "${TOOLS}" <<'PY'
+python3 - "${ROOT_DIR}/containers/images/sources-lock.json" "${SOURCE_LOCK}" "${MACHINE_ID}" "${CONTRACT}" "${INVENTORY}" "${FILESYSTEMS}" "${FIXTURE}" "${TOOLS}" <<'PY'
 import hashlib
 import json
 import sys

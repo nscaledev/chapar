@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
-TARGETS_PATH="${ROOT_DIR}/containers/envs/vlad/image/targets.json"
-SOURCES_PATH="${SOURCES_PATH_OVERRIDE:-${ROOT_DIR}/containers/envs/vlad/image/sources-lock.json}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+TARGETS_PATH="${ROOT_DIR}/containers/images/targets.json"
+SOURCES_PATH="${SOURCES_PATH_OVERRIDE:-${ROOT_DIR}/containers/images/sources-lock.json}"
 
 python3 - "${TARGETS_PATH}" "${SOURCES_PATH}" "${1:-}" <<'PY'
 from __future__ import annotations
@@ -29,6 +29,7 @@ fingerprint_pattern: Final = re.compile(r"^[0-9A-F]{40}$")
 version_pattern: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+:~_-]*$")
 fixed_categories: Final = (
     "nvidia_hpc_benchmarks_oci",
+    "ubuntu_base_oci",
     "spack_repositories",
     "ubuntu_snapshot",
     "ubuntu_archive_key",
@@ -38,6 +39,21 @@ fixed_categories: Final = (
     "actions_runner_archives",
     "github_actions",
 )
+# Which selected-container base each OCI-locked category is for, and which of
+# the registered targets that base actually builds. Kept in sync with
+# containers/images/build-image.sh's BASES dict.
+oci_bases: Final = {
+    "nvidia_hpc_benchmarks_oci": {
+        "image": "nvcr.io/nvidia/hpc-benchmarks",
+        "tag": "26.02",
+        "targets": ("linux-x86_64-generic", "linux-x86_64-v4", "linux-aarch64-gb300"),
+    },
+    "ubuntu_base_oci": {
+        "image": "ubuntu",
+        "tag": "24.04",
+        "targets": ("linux-x86_64-generic",),
+    },
+}
 approved_spack: Final = {
     "spack-core": ("https://github.com/spack/spack.git", "fff95dd9aed0af7c7a8252adbef5623fcd4187f7"),
     "spack-packages": ("https://github.com/spack/spack-packages.git", "65f3228ea2533e8413c17661a3a0db3636269631"),
@@ -202,38 +218,47 @@ def validate_actions(value: object) -> None:
         validation_record(entry["verification"], f"GitHub Action verification {identity}", False)
 
 
-def validate_oci(value: object) -> None:
-    oci = exact_object(value, {"image", "tag", "index_digest", "platforms", "resolved_on"}, "NVIDIA OCI lock")
-    if oci["image"] != "nvcr.io/nvidia/hpc-benchmarks" or oci["tag"] != "26.02":
-        raise ValueError("NVIDIA OCI identity/tag must be the approved 26.02 source")
-    if not isinstance(oci["index_digest"], str) or digest_pattern.fullmatch(oci["index_digest"]) is None:
-        raise ValueError("NVIDIA OCI index digest is not immutable")
-    iso_date(oci["resolved_on"], "NVIDIA OCI resolved_on")
-    platforms = exact_object(oci["platforms"], set(expected_targets), "NVIDIA OCI platforms")
-    # Chapar targets map many-to-one onto the base image's OCI platforms:
-    # linux-x86_64-generic and linux-x86_64-v4 both consume the single
-    # linux/amd64 descriptor of the 26.02 index and differ only in the Spack
-    # tree layered on top. So the invariant is the one the contract's
-    # oci_chain_rule actually states -- exactly one descriptor per approved OCI
-    # platform -- rather than one per target: every target on a platform must
-    # name that platform's descriptor, and two distinct platforms must never
-    # resolve to the same descriptor.
-    descriptors: dict[str, str] = {}
-    for target_name, expected_target in expected_targets.items():
-        platform = exact_object(platforms[target_name], {"oci_platform", "descriptor_digest", "config_digest"}, f"NVIDIA platform {target_name}")
-        if platform["oci_platform"] != expected_target["oci_platform"]:
-            raise ValueError(f"NVIDIA platform mismatch for {target_name}")
-        for key in ("descriptor_digest", "config_digest"):
-            if not isinstance(platform[key], str) or digest_pattern.fullmatch(platform[key]) is None:
-                raise ValueError(f"invalid NVIDIA {key} for {target_name}")
-        oci_platform = str(platform["oci_platform"])
-        locked = descriptors.get(oci_platform)
-        if locked is None:
-            if platform["descriptor_digest"] in descriptors.values():
-                raise ValueError("distinct NVIDIA OCI platforms cannot share a platform descriptor")
-            descriptors[oci_platform] = str(platform["descriptor_digest"])
-        elif locked != platform["descriptor_digest"]:
-            raise ValueError(f"NVIDIA targets on {oci_platform} must name one platform descriptor")
+def make_oci_validator(category: str):
+    base = oci_bases[category]
+    allowed_targets = {name: expected_targets[name] for name in base["targets"]}
+    label = category.replace("_", " ")
+
+    def validate(value: object) -> None:
+        oci = exact_object(value, {"image", "tag", "index_digest", "platforms", "resolved_on"}, f"{label} lock")
+        if oci["image"] != base["image"] or oci["tag"] != base["tag"]:
+            raise ValueError(f"{label} identity/tag must be the approved {base['tag']} source")
+        if not isinstance(oci["index_digest"], str) or digest_pattern.fullmatch(oci["index_digest"]) is None:
+            raise ValueError(f"{label} index digest is not immutable")
+        iso_date(oci["resolved_on"], f"{label} resolved_on")
+        platforms = exact_object(oci["platforms"], set(allowed_targets), f"{label} platforms")
+        # Chapar targets map many-to-one onto the base image's OCI platforms:
+        # linux-x86_64-generic and linux-x86_64-v4 both consume the single
+        # linux/amd64 descriptor of a base's index and differ only in the
+        # Spack tree layered on top (when a base supports both -- ubuntu_base
+        # currently supports only the generic target). So the invariant is
+        # the one the contract's oci_chain_rule actually states -- exactly
+        # one descriptor per approved OCI platform -- rather than one per
+        # target: every target on a platform must name that platform's
+        # descriptor, and two distinct platforms must never resolve to the
+        # same descriptor.
+        descriptors: dict[str, str] = {}
+        for target_name, expected_target in allowed_targets.items():
+            platform = exact_object(platforms[target_name], {"oci_platform", "descriptor_digest", "config_digest"}, f"{label} platform {target_name}")
+            if platform["oci_platform"] != expected_target["oci_platform"]:
+                raise ValueError(f"{label} platform mismatch for {target_name}")
+            for key in ("descriptor_digest", "config_digest"):
+                if not isinstance(platform[key], str) or digest_pattern.fullmatch(platform[key]) is None:
+                    raise ValueError(f"invalid {label} {key} for {target_name}")
+            oci_platform = str(platform["oci_platform"])
+            locked = descriptors.get(oci_platform)
+            if locked is None:
+                if platform["descriptor_digest"] in descriptors.values():
+                    raise ValueError(f"distinct {label} platforms cannot share a platform descriptor")
+                descriptors[oci_platform] = str(platform["descriptor_digest"])
+            elif locked != platform["descriptor_digest"]:
+                raise ValueError(f"{label} targets on {oci_platform} must name one platform descriptor")
+
+    return validate
 
 
 def validate_snapshot(value: object) -> None:
@@ -403,7 +428,8 @@ def validate_unresolved(value: object, verified: dict[str, object], status: str)
 
 
 category_validators: Final = {
-    "nvidia_hpc_benchmarks_oci": validate_oci,
+    "nvidia_hpc_benchmarks_oci": make_oci_validator("nvidia_hpc_benchmarks_oci"),
+    "ubuntu_base_oci": make_oci_validator("ubuntu_base_oci"),
     "spack_repositories": validate_spack,
     "ubuntu_snapshot": validate_snapshot,
     "ubuntu_archive_key": validate_archive_key,
@@ -477,7 +503,7 @@ if mode == "--self-test":
     weakened = copy.deepcopy(sources)
     weakened["contract"]["required_categories"] = ["spack_repositories", "github_actions"]
     invalid_cases.append(("weakened required categories", weakened))
-    with tempfile.TemporaryDirectory(prefix="vlad-image-lock-test-") as directory:
+    with tempfile.TemporaryDirectory(prefix="chapar-image-lock-test-") as directory:
         for name, invalid_document in invalid_cases:
             fixture = Path(directory) / f"{name.replace(' ', '-')}.json"
             fixture.write_text(json.dumps(invalid_document), encoding="utf-8")
@@ -497,16 +523,18 @@ if mode == "--self-test":
         raise AssertionError("duplicate JSON key fixture was accepted")
     print("self-test: rejected wrong mapping, duplicate keys, abbreviated commits, tag-only actions, and floating completion")
 
-oci = sources["verified"].get("nvidia_hpc_benchmarks_oci", {})
-index_digest = oci.get("index_digest", "UNRESOLVED")
-platforms = oci.get("platforms", {})
-print("target | OCI platform | index digest | platform descriptor | config digest")
-for target_name, target in targets["targets"].items():
-    platform = platforms.get(target_name, {})
-    print(
-        f"{target_name} | {target['oci_platform']} | {index_digest} | "
-        f"{platform.get('descriptor_digest', 'UNRESOLVED')} | {platform.get('config_digest', 'UNRESOLVED')}"
-    )
+print("base category | target | OCI platform | index digest | platform descriptor | config digest")
+for category, base in oci_bases.items():
+    oci = sources["verified"].get(category, {})
+    index_digest = oci.get("index_digest", "UNRESOLVED")
+    platforms = oci.get("platforms", {})
+    for target_name in base["targets"]:
+        target = targets["targets"][target_name]
+        platform = platforms.get(target_name, {})
+        print(
+            f"{category} | {target_name} | {target['oci_platform']} | {index_digest} | "
+            f"{platform.get('descriptor_digest', 'UNRESOLVED')} | {platform.get('config_digest', 'UNRESOLVED')}"
+        )
 print("target | native | Spack | LLVM | CUDA")
 for target_name, target in targets["targets"].items():
     print(f"{target_name} | {target['native_arch']} | {target['spack_target']} | {','.join(target['llvm_targets'])} | {','.join(target['cuda_arch'])}")

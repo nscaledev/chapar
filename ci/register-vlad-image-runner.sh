@@ -54,7 +54,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPOSITORY_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-SOURCES_LOCK="${REPOSITORY_ROOT}/containers/envs/vlad/image/sources-lock.json"
+SOURCES_LOCK="${REPOSITORY_ROOT}/containers/images/sources-lock.json"
 SITE_CONTRACT="/etc/chapar/vlad-image/site-contract.json"
 EXPECTED_HASH_FILE="/etc/chapar/vlad-image/site-contract.sha256"
 MACHINE_ID_FILE="/etc/machine-id"
@@ -273,7 +273,7 @@ else:
     anchor = Path("/")
     expected_uid = 0
     expected_production = {
-        "sources lock": repository_root / "containers/envs/vlad/image/sources-lock.json",
+        "sources lock": repository_root / "containers/images/sources-lock.json",
         "site contract": Path("/etc/chapar/vlad-image/site-contract.json"),
         "expected hash": Path("/etc/chapar/vlad-image/site-contract.sha256"),
         "machine ID": Path("/etc/machine-id"),
