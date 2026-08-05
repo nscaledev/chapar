@@ -25,7 +25,6 @@ Keep the buildcache mirror in Chapar Spack scopes, not in `envs/hpcsim/spack.yam
 The Rocky system scopes define the same mirror name, `chapar-buildcache`, with
 URLs rooted at `${CHAPAR_BUILDCACHE_ROOT}/<os>`. This makes the cache visible to:
 
-- `spack -e envs/hpcsim install` after `source etc/init.sh`
 - release builds driven by `envs/hpcsim/release.sh`
 - generic sbatch builds submitted by `ci/submit-env-build.sh` or directly
   through `ci/sbatch-env-build.sh`

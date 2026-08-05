@@ -94,11 +94,11 @@ removed; they are not referenced by the current CI, release helper, or Spack
 scopes. The top-level `envs/hpcsim/spack.yaml` contains the hpcsim root specs,
 package requirements, and module policy for Ubuntu 24.04.
 
-For local validation with the active Spack scopes:
+Inspect the environment and then build it through a versioned release:
 
 ```bash
-spack -e envs/hpcsim concretize -f
-spack -e envs/hpcsim install --only-concrete
+spack -e envs/hpcsim spec
+bash envs/hpcsim/release.sh build ubuntu2404-20260610
 ```
 
 The release helper performs root-only module refreshes. Do not refresh modules
@@ -119,7 +119,7 @@ On the hpcsim Slurm builders, use the OS-specific sbatch wrapper directly.
 The wrapper contains the default partition set, timestamped release ID,
 buildcache publication, module-publication policy, and exclusive-node CPU
 detection. It reserves one exclusive node and uses that node's allocated CPU
-count for `spack install`:
+count for package builds:
 
 ```bash
 sbatch ci/sbatch-env-build.sh
@@ -335,5 +335,5 @@ number of CPUs available on the host.
 Users can still override this for a single command:
 
 ```bash
-spack -e envs/hpcsim install -j 8
+SPACK_INSTALL_ARGS="-j 8" bash envs/hpcsim/release.sh build ubuntu2404-20260610
 ```

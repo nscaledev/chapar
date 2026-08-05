@@ -78,6 +78,11 @@ case "${CHAPAR_ENV_BUILD_MODE}" in
     *) echo "ERROR: CHAPAR_ENV_BUILD_MODE must be auto, release, or spack, got ${CHAPAR_ENV_BUILD_MODE}" >&2; exit 2 ;;
 esac
 
+if [ "${CHAPAR_ENV_ACTION}" = build ] && [ "${CHAPAR_ENV_BUILD_MODE}" = spack ]; then
+    echo "ERROR: direct Spack build mode is forbidden; use CHAPAR_ENV_BUILD_MODE=release" >&2
+    exit 2
+fi
+
 case "${PUBLISH_CURRENT}" in
     true|false) ;;
     *) echo "ERROR: PUBLISH_CURRENT must be true or false, got ${PUBLISH_CURRENT}" >&2; exit 2 ;;
@@ -159,7 +164,7 @@ echo
 
 build_mode="$CHAPAR_ENV_BUILD_MODE"
 if [ "$build_mode" = auto ]; then
-    if [ "$CHAPAR_ENV_ACTION" = build ] && [ -x "${ENV_PATH}/release.sh" ]; then
+    if [ "$CHAPAR_ENV_ACTION" = build ]; then
         build_mode=release
     else
         build_mode=spack
@@ -169,6 +174,7 @@ fi
 case "$build_mode" in
     release)
         [ "$CHAPAR_ENV_ACTION" = build ] || { echo "ERROR: release mode only supports CHAPAR_ENV_ACTION=build" >&2; exit 2; }
+        [ -x "${ENV_PATH}/release.sh" ] || { echo "ERROR: missing release helper: ${ENV_PATH}/release.sh" >&2; exit 2; }
         echo "==> Release status before build"
         OS_NAME="$OS_NAME" bash "${ENV_PATH}/release.sh" status
         echo
@@ -192,14 +198,9 @@ case "$build_mode" in
         OS_NAME="$OS_NAME" bash "${ENV_PATH}/release.sh" module-use "$RELEASE_ID"
         ;;
     spack)
+        [ "$CHAPAR_ENV_ACTION" = concretize ] || { echo "ERROR: Spack mode only supports CHAPAR_ENV_ACTION=concretize" >&2; exit 2; }
         echo "==> Concretizing ${ENV_PATH}"
         spack -e "$ENV_PATH" concretize -f
-        if [ "$CHAPAR_ENV_ACTION" = build ]; then
-            echo
-            echo "==> Installing ${ENV_PATH}"
-            spack -e "$ENV_PATH" install ${SPACK_INSTALL_ARGS}
-            spack -e "$ENV_PATH" module tcl refresh -y
-        fi
         ;;
 esac
 

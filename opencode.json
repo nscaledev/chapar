@@ -87,7 +87,6 @@
       "spack -e envs/* config *": "allow",
       "spack -e envs/* concretize*": "allow",
       "spack -e envs/* find*": "allow",
-      "spack -e envs/* install*": "allow",
       "spack -e envs/* module *": "allow",
       "spack -e envs/* spec *": "allow"
     },

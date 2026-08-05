@@ -23,10 +23,19 @@ endif
 endif
 endif
 
+ifneq ($(filter build,$(MAKECMDGOALS)),)
+ifeq ($(strip $(ENV)),)
+$(error ENV is required for build)
+endif
+ifeq ($(strip $(RELEASE_ID)),)
+$(error RELEASE_ID is required for build)
+endif
+endif
+
 help:
 	@printf '%s\n' \
 	  'Chapar hpcsim targets:' \
-	  '  make build              Concretize and install envs/hpcsim with active scopes' \
+	  '  make build              Build a versioned release (requires ENV and RELEASE_ID)' \
 	  '  make release            Build a staged hpcsim release under the site-configured root' \
 	  '  make promote            Promote RELEASE_ID for the current OS' \
 	  '  make module-use         Print module use command for RELEASE_ID or current' \
@@ -36,14 +45,14 @@ help:
 	  '  make worktree <name>    Create $(WORKTREE_ROOT)/<name> on branch <name>' \
 	  '' \
 	  'Variables:' \
-	  '  RELEASE_ID=$(RELEASE_ID) (blank means generated for release/current for module-use)' \
+	  '  RELEASE_ID=$(RELEASE_ID) (required for build; generated for release; current for module-use)' \
 	  '  SPACK_INSTALL_ARGS=$(SPACK_INSTALL_ARGS)' \
 	  '  BRANCH=                 Optional branch name for make worktree BRANCH=<name>' \
 	  '  WORKTREE_ROOT=$(WORKTREE_ROOT)' \
 	  '  WORKTREE_START=$(WORKTREE_START) (used when creating a new branch)'
 
 build:
-	bash -lc 'source $(SPACK_INIT) && spack -e ./envs/$(ENV) concretize -f && spack -e ./envs/$(ENV) install $(SPACK_INSTALL_ARGS) && spack -e ./envs/$(ENV) module tcl refresh -y'
+	SPACK_INSTALL_ARGS="$(SPACK_INSTALL_ARGS)" bash ./envs/$(ENV)/release.sh build "$(RELEASE_ID)"
 
 release:
 	bash -lc 'source $(SPACK_INIT) && release_id="$(RELEASE_ID)" && : "$${release_id:=$$(date -u +%Y%m%d%H%M%S)}" && SPACK_INSTALL_ARGS="$(SPACK_INSTALL_ARGS)" bash ./envs/$(ENV)/release.sh build "$${release_id}"'
