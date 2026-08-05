@@ -9,9 +9,15 @@ directly from other `nscaledev` repositories (`github-runner`, `image-builder`,
 `release.yaml` pair used by `nks-core`, `cluster-api-provider-nscale`, and
 others). Nothing below exists until it is agreed and implemented.
 
+Manual operators should follow the [canonical nscale Vlad source and image
+build runbook](nscale-vlad-manual-build.md); this document does not activate
+that procedure.
+
 ## What CI must produce
 
-Two selected containers, four builds total (two architectures each):
+Two selected containers, three target builds total. Vlad has exactly two native
+target builds, and hpcsim has exactly one. The repository-wide total is exactly
+three builds total, Vlad two plus hpcsim one:
 
 | Base id | Base image | Environment | Targets |
 |---|---|---|---|
@@ -154,7 +160,7 @@ lock-gate (nscale-k8s) ──► build-env (nscale-chapar-builder, per env×arch
    - `PUBLISH_BUILDCACHE=true` so later rebuilds and the other architecture
      reuse binaries.
 
-3. **build-images** — matrix over `(base, target)` pairs (4 jobs), each on the
+3. **build-images** — matrix over `(base, target)` pairs (3 jobs), each on the
    static group:
    - `build-image.sh --base <nvidia-vlad|ubuntu-hpcsim> --target <target>
      --release-dir <promoted release> --image-id <id> --candidate-root
@@ -165,7 +171,7 @@ lock-gate (nscale-k8s) ──► build-env (nscale-chapar-builder, per env×arch
    - Upload the `.sqsh` + `.sha256` as a build artifact (not a job output) for
      the validate/publish jobs to consume.
 
-4. **validate** — matrix over `(base, target)`, on the static group (the
+4. **validate** — matrix over the same three `(base, target)` pairs, on the static group (the
    validator role needs the same site/hardware access as the builder):
    - Download the artifact from step 3.
    - `preflight.sh --mode runtime --target <target> --sha256 <artifact sha>`
