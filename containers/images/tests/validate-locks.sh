@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 TARGETS_PATH="${ROOT_DIR}/containers/images/targets.json"
 SOURCES_PATH="${SOURCES_PATH_OVERRIDE:-${ROOT_DIR}/containers/images/sources-lock.json}"
+REPOS_PATH="${ROOT_DIR}/etc/system/base/repos.yaml"
 
-python3 - "${TARGETS_PATH}" "${SOURCES_PATH}" "${1:-}" <<'PY'
+python3 - "${TARGETS_PATH}" "${SOURCES_PATH}" "${REPOS_PATH}" "${1:-}" <<'PY'
 from __future__ import annotations
 
 import copy
@@ -20,7 +21,8 @@ from urllib.parse import urlsplit
 
 targets_path = Path(sys.argv[1])
 sources_path = Path(sys.argv[2])
-mode = sys.argv[3]
+repos_path = Path(sys.argv[3])
+mode = sys.argv[4]
 commit_pattern: Final = re.compile(r"^[0-9a-f]{40}$")
 digest_pattern: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
 sha256_pattern: Final = re.compile(r"^[0-9a-f]{64}$")
@@ -241,7 +243,7 @@ def make_oci_validator(category: str):
         # target: every target on a platform must name that platform's
         # descriptor, and two distinct platforms must never resolve to the
         # same descriptor.
-        descriptors: dict[str, str] = {}
+        chains: dict[str, tuple[str, str]] = {}
         for target_name, expected_target in allowed_targets.items():
             platform = exact_object(platforms[target_name], {"oci_platform", "descriptor_digest", "config_digest"}, f"{label} platform {target_name}")
             if platform["oci_platform"] != expected_target["oci_platform"]:
@@ -250,13 +252,17 @@ def make_oci_validator(category: str):
                 if not isinstance(platform[key], str) or digest_pattern.fullmatch(platform[key]) is None:
                     raise ValueError(f"invalid {label} {key} for {target_name}")
             oci_platform = str(platform["oci_platform"])
-            locked = descriptors.get(oci_platform)
+            descriptor = str(platform["descriptor_digest"])
+            config = str(platform["config_digest"])
+            locked = chains.get(oci_platform)
             if locked is None:
-                if platform["descriptor_digest"] in descriptors.values():
+                if descriptor in {chain[0] for chain in chains.values()}:
                     raise ValueError(f"distinct {label} platforms cannot share a platform descriptor")
-                descriptors[oci_platform] = str(platform["descriptor_digest"])
-            elif locked != platform["descriptor_digest"]:
+                chains[oci_platform] = (descriptor, config)
+            elif locked[0] != descriptor:
                 raise ValueError(f"{label} targets on {oci_platform} must name one platform descriptor")
+            elif locked[1] != config:
+                raise ValueError(f"{label} targets sharing a platform descriptor must name one config digest")
 
     return validate
 
@@ -481,38 +487,184 @@ def validate_source_shape(document: dict[str, object], require_complete: bool) -
         raise ValueError("source lock is blocked and must fail closed for production use")
 
 
+def validate_repos_config(path: Path, document: dict[str, object]) -> None:
+    entries = document.get("verified", {}).get("spack_repositories", [])
+    expected_commit = next(
+        (entry.get("commit") for entry in entries if isinstance(entry, dict) and entry.get("id") == "spack-packages"),
+        None,
+    )
+    lines = path.read_text(encoding="utf-8").splitlines()
+    try:
+        start = lines.index("  builtin:") + 1
+    except ValueError as error:
+        raise ValueError("repos config has no builtin repository") from error
+    fields: dict[str, str] = {}
+    for line in lines[start:]:
+        if line and not line.startswith("    "):
+            break
+        match = re.fullmatch(r"    ([a-z_]+):\s+(.+)", line)
+        if match is None or match.group(1) in fields:
+            raise ValueError("builtin repository config is malformed")
+        fields[match.group(1)] = match.group(2)
+    if fields != {
+        "git": "https://github.com/spack/spack-packages.git",
+        "commit": expected_commit,
+    }:
+        raise ValueError("builtin repository must use the exact source-lock spack-packages commit without branch or tag")
+
+
+def synthetic_complete_sources(template: dict[str, object]) -> dict[str, object]:
+    document = copy.deepcopy(template)
+
+    def digest(number: int) -> str:
+        return f"sha256:{number:064x}"
+
+    snapshot_url = "https://snapshot.ubuntu.com/ubuntu/20260805T000000Z"
+    document["status"] = "complete"
+    document["resolved_on"] = "2026-08-05"
+    document["unresolved"] = []
+    verified = document["verified"]
+    verified["nvidia_hpc_benchmarks_oci"] = {
+        "image": "nvcr.io/nvidia/hpc-benchmarks",
+        "tag": "26.02",
+        "index_digest": digest(1),
+        "platforms": {
+            "linux-x86_64-generic": {"oci_platform": "linux/amd64", "descriptor_digest": digest(2), "config_digest": digest(3)},
+            "linux-x86_64-v4": {"oci_platform": "linux/amd64", "descriptor_digest": digest(2), "config_digest": digest(3)},
+            "linux-aarch64-gb300": {"oci_platform": "linux/arm64", "descriptor_digest": digest(4), "config_digest": digest(5)},
+        },
+        "resolved_on": "2026-08-05",
+    }
+    verified["ubuntu_snapshot"] = {
+        "release": "24.04",
+        "snapshot_url": snapshot_url,
+        "pockets": [{
+            "id": "noble",
+            "inrelease_url": f"{snapshot_url}/dists/noble/InRelease",
+            "inrelease_sha256": f"{10:064x}",
+            "package_indexes": [
+                {"architecture": "amd64", "url": f"{snapshot_url}/dists/noble/main/binary-amd64/Packages.xz", "sha256": f"{11:064x}"},
+                {"architecture": "arm64", "url": f"{snapshot_url}/dists/noble/main/binary-arm64/Packages.xz", "sha256": f"{12:064x}"},
+            ],
+        }],
+        "archive_key_fingerprint": "A" * 40,
+        "resolved_on": "2026-08-05",
+    }
+    verified["ubuntu_archive_key"] = {
+        "fingerprint": "A" * 40,
+        "source_url": "https://keyserver.ubuntu.com/pks/lookup?op=get&search=synthetic",
+        "key_sha256": f"{13:064x}",
+        "resolved_on": "2026-08-05",
+    }
+
+    def packages(name: str, first_hash: int) -> list[dict[str, str]]:
+        return [
+            {"name": name, "version": "1.0", "architecture": architecture,
+             "url": f"{snapshot_url}/pool/main/{name[0]}/{name}/{name}_1.0_{architecture}.deb",
+             "sha256": f"{first_hash + offset:064x}"}
+            for offset, architecture in enumerate(("amd64", "arm64"))
+        ]
+
+    verified["ubuntu_builder_packages"] = packages("builder", 20)
+    verified["ubuntu_final_packages"] = packages("runtime", 30)
+
+    tool_projects = {
+        "docker-buildx": ("https://github.com/docker/buildx", ("docker", "docker-buildx")),
+        "buildkit": ("https://github.com/moby/buildkit", ("buildctl",)),
+        "enroot": ("https://github.com/NVIDIA/enroot", ("enroot",)),
+        "squashfs-tools": (snapshot_url, ("mksquashfs", "unsquashfs")),
+        "zstd": (snapshot_url, ("zstd",)),
+        "syft": ("https://github.com/anchore/syft", ("syft",)),
+        "jq": ("https://github.com/jqlang/jq", ("jq",)),
+        "skopeo": ("https://github.com/containers/skopeo", ("skopeo",)),
+    }
+    tools = []
+    for tool_offset, (identity, (prefix, binaries)) in enumerate(tool_projects.items(), start=40):
+        base_url = f"{prefix}/releases/download/v1.0/{identity}-1.0"
+        assets = {}
+        for arch_offset, architecture in enumerate(("x86_64", "aarch64")):
+            assets[architecture] = {
+                "url": f"{base_url}-{architecture}.tar.gz",
+                "sha256": f"{tool_offset + arch_offset:064x}",
+                "binaries": [
+                    {"name": binary, "sha256": f"{tool_offset + arch_offset + binary_offset + 100:064x}"}
+                    for binary_offset, binary in enumerate(binaries)
+                ],
+            }
+        tools.append({
+            "id": identity,
+            "version": "1.0",
+            "source_url": f"{base_url}-source.tar.gz",
+            "release_sha256": f"{tool_offset + 200:064x}",
+            "assets": assets,
+        })
+    verified["builder_tools"] = tools
+    verified["actions_runner_archives"] = [
+        {"id": identity, "architecture": architecture, "version": "1.0",
+         "url": f"https://github.com/actions/runner/releases/download/v1.0/actions-runner-{identity}-1.0.tar.gz",
+         "sha256": f"{300 + offset:064x}"}
+        for offset, (identity, architecture) in enumerate((("linux-x64", "x64"), ("linux-arm64", "arm64")))
+    ]
+    return document
+
+
 targets = load_json(targets_path)
 sources = load_json(sources_path)
 validate_targets(targets)
 validate_source_shape(sources, mode == "--require-complete")
+validate_repos_config(repos_path, sources)
 
 if mode == "--self-test":
-    invalid_cases: list[tuple[str, dict[str, object]]] = []
+    complete = synthetic_complete_sources(sources)
+    validate_source_shape(complete, True)
+    invalid_cases: list[tuple[str, dict[str, object], bool]] = []
     duplicate_target = copy.deepcopy(targets)
     duplicate_target["targets"]["linux-aarch64-gb300"] = copy.deepcopy(expected_targets["linux-x86_64-generic"])
-    invalid_cases.append(("wrong target mapping", duplicate_target))
-    abbreviated = copy.deepcopy(sources)
+    invalid_cases.append(("wrong target mapping", duplicate_target, False))
+    abbreviated = copy.deepcopy(complete)
     abbreviated["verified"]["spack_repositories"][0]["commit"] = "fff95dd9"
-    invalid_cases.append(("abbreviated commit", abbreviated))
-    tag_only = copy.deepcopy(sources)
+    invalid_cases.append(("abbreviated commit", abbreviated, False))
+    tag_only = copy.deepcopy(complete)
     tag_only["verified"]["github_actions"][0]["commit"] = "v4"
-    invalid_cases.append(("tag-only action", tag_only))
+    invalid_cases.append(("tag-only action", tag_only, False))
     floating = copy.deepcopy(sources)
     floating["status"] = "complete"
-    invalid_cases.append(("floating incomplete lock", floating))
-    weakened = copy.deepcopy(sources)
+    invalid_cases.append(("floating incomplete lock", floating, False))
+    weakened = copy.deepcopy(complete)
     weakened["contract"]["required_categories"] = ["spack_repositories", "github_actions"]
-    invalid_cases.append(("weakened required categories", weakened))
+    invalid_cases.append(("weakened required categories", weakened, False))
+    globally_blocked = copy.deepcopy(complete)
+    globally_blocked["status"] = "blocked"
+    invalid_cases.append(("globally blocked complete-content lock", globally_blocked, True))
+    wrong_platform = copy.deepcopy(complete)
+    wrong_platform["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-x86_64-v4"]["oci_platform"] = "linux/arm64"
+    invalid_cases.append(("wrong OCI platform", wrong_platform, False))
+    divergent_descriptor = copy.deepcopy(complete)
+    divergent_descriptor["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-x86_64-v4"]["descriptor_digest"] = f"sha256:{400:064x}"
+    invalid_cases.append(("divergent same-platform descriptors", divergent_descriptor, False))
+    reused_descriptor = copy.deepcopy(complete)
+    reused_descriptor["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-aarch64-gb300"]["descriptor_digest"] = f"sha256:{2:064x}"
+    invalid_cases.append(("cross-platform descriptor reuse", reused_descriptor, False))
+    divergent_config = copy.deepcopy(complete)
+    divergent_config["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-x86_64-v4"]["config_digest"] = f"sha256:{401:064x}"
+    invalid_cases.append(("descriptor/config chain mismatch", divergent_config, False))
+    malformed_config = copy.deepcopy(complete)
+    malformed_config["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-aarch64-gb300"]["config_digest"] = "sha256:not-a-digest"
+    invalid_cases.append(("malformed config digest", malformed_config, False))
+    missing_category = copy.deepcopy(complete)
+    del missing_category["verified"]["builder_tools"]
+    invalid_cases.append(("missing category", missing_category, False))
     with tempfile.TemporaryDirectory(prefix="chapar-image-lock-test-") as directory:
-        for name, invalid_document in invalid_cases:
-            fixture = Path(directory) / f"{name.replace(' ', '-')}.json"
+        for name, invalid_document, require_complete in invalid_cases:
+            fixture = Path(directory) / f"{re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')}.json"
             fixture.write_text(json.dumps(invalid_document), encoding="utf-8")
             try:
                 if name == "wrong target mapping":
                     validate_targets(load_json(fixture))
                 else:
-                    validate_source_shape(load_json(fixture), False)
-            except ValueError:
+                    validate_source_shape(load_json(fixture), require_complete)
+            except ValueError as error:
+                print(f"self-test case: rejected {name}: {error}")
                 continue
             raise AssertionError(f"invalid fixture was accepted: {name}")
     try:
@@ -521,7 +673,8 @@ if mode == "--self-test":
         pass
     else:
         raise AssertionError("duplicate JSON key fixture was accepted")
-    print("self-test: rejected wrong mapping, duplicate keys, abbreviated commits, tag-only actions, and floating completion")
+    print("self-test case: rejected duplicate JSON keys")
+    print("self-test: accepted synthetic complete lock with shared linux/amd64 and distinct linux/arm64 OCI chains")
 
 print("base category | target | OCI platform | index digest | platform descriptor | config digest")
 for category, base in oci_bases.items():

@@ -2,4 +2,4 @@ repos:
   chapar_plus: ../../../spack_repo/chapar_plus
   builtin:
     git: https://github.com/spack/spack-packages.git
-    branch: develop
+    commit: 65f3228ea2533e8413c17661a3a0db3636269631
