@@ -92,6 +92,7 @@ otherwise read the skill's `SKILL.md` before changing files.
 | Local Spack package overlay recipe or patch changes under `spack_repo/chapar_plus` | `agents/skills/chapar-spack-repo-overlay/SKILL.md` |
 | OpenCode config, agent skill layout, skill migration, or project skill policy changes | `agents/skills/chapar-opencode-skills/SKILL.md` |
 | Creating or improving `agents/skills` | `agents/skills/skill-creator/SKILL.md` |
+| Manual nscale/Vlad source, release, or `.sqsh` work | `docs/nscale-vlad-manual-build.md` and `agents/skills/chapar-vlad-image/SKILL.md` |
 | Visual diff help when VS Code CLI is available | `agents/skills/vscode/SKILL.md` |
 | External web search when Brave Search credentials are configured | `agents/skills/brave-search/SKILL.md` |
 
@@ -120,6 +121,14 @@ A fully shared directory (for example a single `.agents/`) is not possible today
 Code hardcodes `.claude/skills`, while OpenCode and Codex take a configured path. Any
 other name would still need this symlink, so `agents/skills/` stays the source of truth.
 `.claude/` otherwise holds only Claude-specific local settings, which are untracked.
+
+The canonical manual nscale/Vlad source and image procedure is
+[`docs/nscale-vlad-manual-build.md`](docs/nscale-vlad-manual-build.md). Project catalogs link to it rather than
+copying runnable commands. The historical `vlad-image` name is retained only
+for internal runtime paths, units, and environment variables; it does not add
+another base id. Repository remediation uses disposable fixtures and never
+changes shared or live paths. Future operator gates cover those paths after
+source approval, while the production source lock remains blocked.
 
 Instruction files are context, not enforcement — no harness guarantees compliance. Rules
 that must hold regardless live in `.githooks/`.

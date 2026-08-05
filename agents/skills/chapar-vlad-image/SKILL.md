@@ -1,16 +1,18 @@
 ---
 name: chapar-vlad-image
-description: Modify or debug the Chapar image pipeline — injecting a promoted environment release (vlad or hpcsim) into a digest-locked base image (nvidia-vlad or ubuntu-hpcsim), the sources lock, site contract, host preflight, or image runner provisioning. Use for containers/images/, ci/register-vlad-image-runner.sh, ci/install-vlad-image-site-contract.sh, or their tests.
+description: Modify or debug manual nscale/Vlad source, release, and .sqsh work, including the shared Chapar image pipeline, digest-locked bases, source lock, site contract, preflight, and image runner provisioning. Use for containers/images/, ci/register-vlad-image-runner.sh, ci/install-vlad-image-site-contract.sh, or their tests. Follow docs/nscale-vlad-manual-build.md for the runnable operator procedure.
 ---
 
 # Chapar Image Pipeline
 
 Use this playbook for everything under `containers/images/` and the
 image-runner provisioning scripts in `ci/`. The pipeline and its provisioning
-infrastructure keep the historical "vlad-image" name (runtime paths, systemd
-units, env var prefixes) even though the pipeline now also serves hpcsim —
-renaming that internal naming is out of scope; only the *base ids* and the
-*pipeline directory* were generalized.
+infrastructure keep the historical `vlad-image` internal name in runtime paths,
+systemd units, and environment variable prefixes, even though the shared
+pipeline also serves hpcsim. Do not introduce another base id or rename that
+internal name. The canonical manual source, release, and `.sqsh` procedure is
+[`docs/nscale-vlad-manual-build.md`](../../../docs/nscale-vlad-manual-build.md);
+link to it rather than copying its runnable command sequence.
 
 ## What this pipeline is
 

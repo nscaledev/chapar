@@ -34,6 +34,20 @@ policy instead of contradicting it.
     contract (runner roles, per-target partition/constraint).
   - `tests/`: `validate-locks.sh`, `preflight-test.sh`.
 
+## Manual build procedure
+
+The complete manual nscale/Vlad source, release, validation, and `.sqsh`
+procedure is [`docs/nscale-vlad-manual-build.md`](../docs/nscale-vlad-manual-build.md).
+This catalog intentionally does not copy its runnable command sequence. The
+production source lock is still blocked, so repository QA performs no live
+source, Spack, image, Slurm, or deployment action. The runbook separates
+disposable repository fixtures from shared and live operator paths, and labels
+the builder, validator, and publisher steps as future operator gates.
+
+The historical `vlad-image` name remains in runtime paths and host contracts;
+it is internal naming, not a new base id. Use only the builder-defined base ids
+`nvidia-vlad` and `ubuntu-hpcsim`.
+
 ## Building an image
 
 `containers/images/build-image.sh` follows the same Enroot conventions as
@@ -72,30 +86,8 @@ LD_LIBRARY_PATH is disturbed, so on `nvidia-vlad` the base's own MPI/HPL/NCCL
 entrypoints under `/workspace` keep working; the environment's own stack is
 opt-in via `module load`.
 
-```bash
-# Inspect what would be built -- resolves nothing remote, mutates nothing.
-containers/images/build-image.sh \
-  --base nvidia-vlad --target linux-x86_64-v4 \
-  --release-dir /resources/chapar/vlad/ubuntu24.04/<arch>/current \
-  --image-id vlad-nvidia --plan-only
-
-containers/images/build-image.sh \
-  --base ubuntu-hpcsim --target linux-x86_64-generic \
-  --release-dir /resources/chapar/hpcsim/ubuntu24.04/<arch>/current \
-  --image-id hpcsim-ubuntu --plan-only
-
-# Real build, on an Enroot host of the target architecture.
-containers/images/build-image.sh \
-  --base nvidia-vlad --target linux-x86_64-v4 \
-  --release-dir /resources/chapar/vlad/ubuntu24.04/<arch>/current \
-  --image-id vlad-nvidia \
-  --candidate-root /resources/chapar/vlad-image/candidates
-```
-
-The build writes into the candidate root; sealing it into
-`<image_root>/<target>/releases/<release-id>/` is the publisher role's job,
-gated by `preflight.sh --mode publisher`. How these steps chain together in CI
-is proposed in `docs/ci-github-actions.md`.
+See the canonical runbook for all runnable commands and role gates. Do not
+invent or duplicate a second command sequence here.
 
 Tests for this pipeline need `python3` with `jsonschema`:
 

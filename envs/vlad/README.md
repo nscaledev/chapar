@@ -62,13 +62,13 @@ default), built for both architectures:
 |---|---|---|
 | `nvidia-vlad` | NVIDIA HPC-benchmarks 26.02 | `linux-x86_64-v4`, `linux-aarch64-gb300` |
 
-Build with `containers/images/build-image.sh --base nvidia-vlad --target
-<target> ...` on a builder of the matching architecture. This base's own
-`nvidia_hpc_benchmarks_oci` category in `containers/images/sources-lock.json`
-is still unresolved, so the build fails closed until it is locked. See
-`containers/README.md` for the shared image pipeline (it also serves hpcsim's
-`ubuntu-hpcsim` container) and `docs/ci-github-actions.md` for the proposed CI
-wiring.
+The manual nscale/Vlad source, release, and `.sqsh` procedure is
+[`docs/nscale-vlad-manual-build.md`](../../docs/nscale-vlad-manual-build.md). It
+is the only catalog for runnable operator commands. The
+`nvidia_hpc_benchmarks_oci` category remains unresolved and the production
+source lock remains blocked, so repository QA does not build or publish an
+image. Shared and live paths belong to future operator gates; disposable
+repository fixtures are the QA surface.
 
 ## Building Vlad
 
