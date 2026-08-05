@@ -17,19 +17,33 @@ available Vlad components.
 
 ## Microarchitecture target
 
-Vlad targets `x86_64_v4` (AVX-512F/BW/CD/DQ/VL) on x86 builders. Two settings in
-`spack.yaml` carry this, both scoped to the environment so no other environment
-re-concretizes:
+Vlad selects `x86_64_v4` (AVX-512F/BW/CD/DQ/VL) for the `x86_64` target family
+and `aarch64` for the `aarch64` family. The two `packages: all: require` rules in
+`spack.yaml` are conditional on those families and remain scoped to Vlad, so no
+other environment re-concretizes. The environment also keeps:
 
-- `packages: all: target: [x86_64_v4]` — **not yet validated on an aarch64
-  builder.** If Spack treats this list as a hard constraint rather than a
-  preference, a Grace build for the `linux-aarch64-gb300` image target will fail
-  to concretize and this needs an arch-guarded require instead. Confirm with
-  `spack -e envs/vlad config blame packages` and a concretize on each builder.
 - `concretizer: targets: granularity: microarchitecture` — overrides
   `etc/system/base/concretizer.yaml`, which keeps `generic` for everything else.
   `host_compatible` stays `true`, so a builder that cannot execute v4 cannot
   silently emit v4 binaries.
+
+Before native concretization, require the builder family to match the intended
+image family and inspect a fresh concrete metadata-only spec:
+
+```bash
+test "$(spack arch --family)" = "$EXPECTED_NATIVE_FAMILY"
+spack -e envs/vlad spec --fresh --yaml zlib target="$(spack arch --family)" > native-spec.yaml
+python3 envs/vlad/tests/target-policy-test.py \
+  --assert-concrete-yaml native-spec.yaml \
+  --expected-target "$EXPECTED_CONCRETE_TARGET"
+```
+
+Use `EXPECTED_NATIVE_FAMILY=x86_64` with
+`EXPECTED_CONCRETE_TARGET=x86_64_v4`, or use `aarch64` for both values on the
+Grace builder. These are family, spec, and concrete-target gates only; they do
+not claim a package build succeeded. After all gates pass, the operator may run
+the deferred `spack -e envs/vlad concretize -f` step through the approved
+release procedure.
 
 The matching image target is `linux-x86_64-v4` in
 `containers/images/targets.json`; its runtime preflight requires CPUID and

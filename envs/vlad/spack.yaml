@@ -85,21 +85,11 @@ spack:
         lapack: [openblas]
         libllvm: [llvm]
         scalapack: [netlib-scalapack]
-      # x86-64-v4 (AVX-512F/BW/CD/DQ/VL) is the deployment floor for the
-      # linux-x86_64-v4 image target. host_compatible: true below means a
-      # builder that cannot execute v4 will not silently produce v4 binaries.
-      #
-      # UNVERIFIED: whether this list is a soft preference or a hard constraint
-      # in the pinned Spack was not confirmed (the spack/ submodule is not
-      # checked out in the authoring clone, and macOS cannot concretize this
-      # env). It matters because vlad also builds on Grace for the
-      # linux-aarch64-gb300 image target: if this is hard, an aarch64 build
-      # fails to concretize instead of falling back to the host's best target,
-      # and this needs an arch-guarded require or a `when: target=x86_64`
-      # include instead. Confirm on the Ubuntu builder before relying on it:
-      #   spack -e envs/vlad config blame packages | grep -A2 target
-      #   spack -e envs/vlad concretize -f
-      target: [x86_64_v4]
+      require:
+      - spec: "target=x86_64_v4"
+        when: "target=x86_64"
+      - spec: "target=aarch64"
+        when: "target=aarch64"
     c:
       require:
       - spec: gcc@15
