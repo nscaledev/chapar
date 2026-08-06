@@ -14,6 +14,7 @@ import tempfile
 from typing import Final, NamedTuple
 
 from target_policy_yaml import (
+    EXPECTED_LLVM_REQUIRE,
     EXPECTED_REQUIRE,
     PolicyError,
     YamlValue,
@@ -26,6 +27,11 @@ from target_policy_yaml import (
 SPACK_COMMIT: Final = "fff95dd9aed0af7c7a8252adbef5623fcd4187f7"
 PACKAGES_COMMIT: Final = "65f3228ea2533e8413c17661a3a0db3636269631"
 EXPECTED_RULES: Final = [("zlib", "one_of", "REQUIRE_YAML", ("target=x86_64_v4",), "target=x86_64", "DEFAULT", None), ("zlib", "one_of", "REQUIRE_YAML", ("target=aarch64",), "target=aarch64", "DEFAULT", None)]
+EXPECTED_LLVM_RULES: Final = [
+    ("llvm", "one_of", "REQUIRE_YAML", ("@21",), "", "PACKAGE", None),
+    ("llvm", "one_of", "REQUIRE_YAML", ("+clang~flang~ipo+lld~lldb~polly build_system=cmake targets=nvptx,x86",), "target=x86_64", "PACKAGE", None),
+    ("llvm", "one_of", "REQUIRE_YAML", ("+clang~flang~ipo+lld~lldb~polly build_system=cmake targets=aarch64,nvptx",), "target=aarch64", "PACKAGE", None),
+]
 type RuleView = tuple[str, str, str, tuple[str, ...], str, str, str | None]
 
 
@@ -147,6 +153,7 @@ def validate_with_spack(yaml_path: Path, packages: dict[str, YamlValue], sources
         with yaml_path.open(encoding="utf-8") as stream:
             actual = syaml.load_config(stream)
         require(actual["spack"]["packages"]["all"]["require"] == EXPECTED_REQUIRE, "Spack YAML loader saw different requirements")
+        require(actual["spack"]["packages"]["llvm"]["require"] == EXPECTED_LLVM_REQUIRE, "Spack YAML loader saw different LLVM requirements")
         bootstrap_scope = spack.config.InternalConfigScope(
             "target-policy-offline", data={"bootstrap": {"enable": False, "sources": []}}
         )
@@ -164,6 +171,11 @@ def validate_with_spack(yaml_path: Path, packages: dict[str, YamlValue], sources
                     parsed = RequirementParser(spack.config.CONFIG).rules_from_require(package)
                     rules: list[RuleView] = [(rule.pkg_name, rule.policy, rule.origin.name, tuple(str(item) for item in rule.requirements), str(rule.condition), rule.kind.name, rule.message) for rule in parsed]
                     require(rules == EXPECTED_RULES, "malformed RequirementRule output")
+                    llvm_class = spack.repo.PATH.get_pkg_class("llvm")
+                    llvm_package = llvm_class(spack.spec.Spec("llvm"))
+                    llvm_parsed = RequirementParser(spack.config.CONFIG).rules_from_require(llvm_package)
+                    llvm_rules: list[RuleView] = [(rule.pkg_name, rule.policy, rule.origin.name, tuple(str(item) for item in rule.requirements), str(rule.condition), rule.kind.name, rule.message) for rule in llvm_parsed]
+                    require(llvm_rules == EXPECTED_LLVM_RULES, "malformed LLVM RequirementRule output")
                     inject_failure("parser")
         finally:
             spack.repo.PATH.disable()
@@ -252,8 +264,11 @@ def run_self_test(sources: PinnedSources | None) -> str:
         targets = root / "targets.json"
         targets.write_text(json.dumps({"targets": {"linux-x86_64-v4": {"native_arch": "x86_64", "spack_target": "x86_64_v4"}, "linux-aarch64-gb300": {"native_arch": "aarch64", "spack_target": "aarch64"}}}), encoding="utf-8")
         malformed, wrong, missing, mutated, valid = (root / name for name in ("malformed.yaml", "wrong.yaml", "missing.yaml", "mutated.yaml", "valid.yaml"))
-        for path, content in ((malformed, "spack: [\n"), (wrong, "spack:\n  packages:\n    all:\n      target: [x86_64_v4]\n"), (missing, "spack:\n  packages:\n    all: {}\n"), (mutated, "spack:\n  packages:\n    all:\n      require:\n      - spec: target=x86_64\n        when: target=x86_64\n      - spec: target=aarch64\n        when: target=aarch64\n"), (valid, "spack:\n  packages:\n    all:\n      require:\n      - spec: target=x86_64_v4\n        when: target=x86_64\n      - spec: target=aarch64\n        when: target=aarch64\n")):
+        llvm_policy = "    llvm:\n      require:\n      - '@21'\n      - spec: +clang+lld~lldb~flang~polly~ipo build_system=cmake targets=x86,nvptx\n        when: target=x86_64\n      - spec: +clang+lld~lldb~flang~polly~ipo build_system=cmake targets=aarch64,nvptx\n        when: target=aarch64\n"
+        for path, content in ((malformed, "spack: [\n"), (wrong, "spack:\n  packages:\n    all:\n      target: [x86_64_v4]\n"), (missing, "spack:\n  packages:\n    all: {}\n"), (mutated, "spack:\n  packages:\n    all:\n      require:\n      - spec: target=x86_64\n        when: target=x86_64\n      - spec: target=aarch64\n        when: target=aarch64\n" + llvm_policy), (valid, "spack:\n  packages:\n    all:\n      require:\n      - spec: target=x86_64_v4\n        when: target=x86_64\n      - spec: target=aarch64\n        when: target=aarch64\n" + llvm_policy)):
             path.write_text(content, encoding="utf-8")
+        wrong_llvm = root / "wrong-llvm.yaml"
+        wrong_llvm.write_text(valid.read_text(encoding="utf-8").replace("targets=aarch64,nvptx", "targets=x86,nvptx"), encoding="utf-8")
         wrong_targets = root / "wrong-targets.json"
         wrong_targets.write_text(json.dumps({"targets": {"linux-x86_64-v4": {"native_arch": "x86_64", "spack_target": "x86_64"}, "linux-aarch64-gb300": {"native_arch": "aarch64", "spack_target": "aarch64"}}}), encoding="utf-8")
         concrete: dict[str, Path] = {}
@@ -265,6 +280,7 @@ def run_self_test(sources: PinnedSources | None) -> str:
             ([str(wrong), str(targets)], "unconditional Vlad target remains", {}),
             ([str(missing), str(targets)], "spack.packages.all.require must be a list", {}),
             ([str(mutated), str(targets)], "architecture requirements do not match exact policy", {}),
+            ([str(wrong_llvm), str(targets)], "LLVM architecture requirements do not match exact policy", {}),
             ([str(valid), str(wrong_targets)], "x86 target registry mismatch", {}),
             (["--internal-case", "malformed-rule"], "malformed RequirementRule output", {}),
             (["--spack-source", str(root), "--spack-packages-source", str(root), str(valid), str(targets)], "source is not an exact Git checkout", {}),

@@ -180,7 +180,10 @@ spack:
     llvm:
       require:
       - '@21'
-      - +clang+lld~lldb~flang~polly~ipo build_system=cmake targets=x86,nvptx
+      - spec: +clang+lld~lldb~flang~polly~ipo build_system=cmake targets=x86,nvptx
+        when: target=x86_64
+      - spec: +clang+lld~lldb~flang~polly~ipo build_system=cmake targets=aarch64,nvptx
+        when: target=aarch64
     mpip:
       require:
       - spec: '+setjmp~libunwind cflags="-Wno-error=implicit-int -Wno-error=implicit-function-declaration"'

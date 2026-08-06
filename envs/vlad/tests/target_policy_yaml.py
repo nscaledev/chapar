@@ -10,6 +10,17 @@ EXPECTED_REQUIRE: Final = [
     {"spec": "target=x86_64_v4", "when": "target=x86_64"},
     {"spec": "target=aarch64", "when": "target=aarch64"},
 ]
+EXPECTED_LLVM_REQUIRE: Final = [
+    "@21",
+    {
+        "spec": "+clang+lld~lldb~flang~polly~ipo build_system=cmake targets=x86,nvptx",
+        "when": "target=x86_64",
+    },
+    {
+        "spec": "+clang+lld~lldb~flang~polly~ipo build_system=cmake targets=aarch64,nvptx",
+        "when": "target=aarch64",
+    },
+]
 
 
 class PolicyError(Exception):
@@ -48,6 +59,9 @@ def validate_structure(yaml_path: Path, targets_path: Path) -> dict[str, YamlVal
     require("target" not in all_policy, "unconditional Vlad target remains")
     requirements = as_list(all_policy.get("require"), "spack.packages.all.require")
     require(requirements == EXPECTED_REQUIRE, "architecture requirements do not match exact policy")
+    llvm_policy = as_mapping(packages.get("llvm"), "spack.packages.llvm")
+    llvm_requirements = as_list(llvm_policy.get("require"), "spack.packages.llvm.require")
+    require(llvm_requirements == EXPECTED_LLVM_REQUIRE, "LLVM architecture requirements do not match exact policy")
     registry = as_mapping(load_yaml(targets_path), "target registry")
     targets = as_mapping(registry.get("targets"), "target registry targets")
     x86 = as_mapping(targets.get("linux-x86_64-v4"), "x86 target")

@@ -1557,8 +1557,13 @@ cmd_build() {
 
     case "${OS_NAME}" in
         ubuntu24.04)
-            # LLVM+Clang provides C/CXX virtuals; preinstall it so concretization can reuse a concrete provider.
-            install_release_prerequisite "${scope_dir}" "llvm@21+clang+lld~lldb~flang~polly~ipo build_system=cmake targets=x86,nvptx %gcc" "${install_args[@]}"
+            local llvm_targets
+            case "$(spack arch --family)" in
+                x86_64) llvm_targets="x86,nvptx" ;;
+                aarch64) llvm_targets="aarch64,nvptx" ;;
+                *) die "unsupported LLVM target family: $(spack arch --family)" ;;
+            esac
+            install_release_prerequisite "${scope_dir}" "llvm@21+clang+lld~lldb~flang~polly~ipo build_system=cmake targets=${llvm_targets} %gcc" "${install_args[@]}"
             ;;
     esac
 
