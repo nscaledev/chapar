@@ -100,6 +100,10 @@ require_file() {
     [ -f "$1" ] && [ ! -L "$1" ] || fail "setup error: missing regular file: $1"
 }
 
+require_executable() {
+    [ -f "$1" ] && [ -x "$1" ] || fail "setup error: missing executable file: $1"
+}
+
 join_by_colon() {
     local result=""
     local item
@@ -119,10 +123,10 @@ resolve_executable() {
         resolved="$(command -v -- "${input}" 2>/dev/null || true)"
     fi
     [ -n "${resolved}" ] || fail "setup error: cannot resolve ${label}: ${input}"
-    resolved="$("${resolved}" -c 'import os, sys; print(os.path.realpath(sys.executable))' 2>/dev/null)" || \
+    resolved="$("${resolved}" -c 'import os, sys; print(os.path.abspath(sys.executable))' 2>/dev/null)" || \
         fail "setup error: cannot execute ${label}: ${input}"
-    [ -n "${resolved}" ] && [ -f "${resolved}" ] && [ ! -L "${resolved}" ] || \
-        fail "setup error: ${label} did not resolve to a regular non-symlinked executable"
+    [ -n "${resolved}" ] && [ -f "${resolved}" ] && [ -x "${resolved}" ] || \
+        fail "setup error: ${label} did not resolve to an executable file"
     printf '%s\n' "${resolved}"
 }
 
@@ -701,6 +705,7 @@ cleanup_observed_python_caches() {
 from __future__ import annotations
 
 import os
+import re
 import stat
 import sys
 from pathlib import Path, PurePosixPath
@@ -710,8 +715,12 @@ root = Path(sys.argv[1])
 separator = sys.argv.index("--", 2)
 directories = tuple(PurePosixPath(item) for item in sys.argv[2:separator])
 files = tuple(PurePosixPath(item) for item in sys.argv[separator + 1 :])
-expected_files = frozenset(files)
 existing_directories: list[PurePosixPath] = []
+allowed_modules = {
+    PurePosixPath("ci/__pycache__"): frozenset({"install-validated-sqsh", "verify-vlad-source-approval"}),
+    PurePosixPath("ci/tests/__pycache__"): frozenset({"no-direct-install-surface-test", "nscale-vlad-runbook-test"}),
+    PurePosixPath("envs/vlad/tests/__pycache__"): frozenset({"target-policy-test", "target_policy_yaml"}),
+}
 
 for relative in directories:
     path = root / relative
@@ -729,11 +738,8 @@ if not existing_directories:
     print("PASS: enumerated product Python caches were already absent")
     raise SystemExit(0)
 
-if frozenset(existing_directories) != frozenset(directories):
-    raise SystemExit("cache cleanup refused partial observed directory inventory")
-
 actual_files: set[PurePosixPath] = set()
-for relative in directories:
+for relative in existing_directories:
     path = root / relative
     with os.scandir(path) as stream:
         entries = list(stream)
@@ -744,21 +750,19 @@ for relative in directories:
             raise SystemExit(f"cache cleanup refused non-regular or symlink entry: {child}")
         if info.st_uid != os.getuid():
             raise SystemExit(f"cache cleanup refused unowned file: {child}")
+        match = re.fullmatch(r"(.+)\.cpython-[0-9]{2,3}\.pyc", entry.name)
+        if match is None or match.group(1) not in allowed_modules[relative]:
+            raise SystemExit(f"cache cleanup refused inventory drift: unexpected={child}")
         actual_files.add(child)
 
-if actual_files != expected_files:
-    missing = sorted(str(item) for item in expected_files - actual_files)
-    extra = sorted(str(item) for item in actual_files - expected_files)
-    raise SystemExit(f"cache cleanup refused inventory drift: missing={missing!r} extra={extra!r}")
-
-for relative in files:
+for relative in actual_files:
     (root / relative).unlink()
-for relative in directories:
+for relative in existing_directories:
     (root / relative).rmdir()
-for relative in (*directories, *files):
+for relative in (*existing_directories, *actual_files):
     if os.path.lexists(root / relative):
         raise SystemExit(f"cache cleanup failed to remove exact observed path: {relative}")
-print(f"PASS: removed exact observed product Python cache inventory directories={len(directories)} files={len(files)}")
+print(f"PASS: removed exact observed product Python cache inventory directories={len(existing_directories)} files={len(actual_files)}")
 PY
 }
 
@@ -806,7 +810,7 @@ host_preflight() {
     for tool in bash git make; do
         command -v "${tool}" >/dev/null 2>&1 || fail "setup error: missing required tool: ${tool}"
     done
-    require_file "${PYTHON_BIN}"
+    require_executable "${PYTHON_BIN}"
     PYTHONNOUSERSITE=1 PYTHONPATH="${PYTHON_MODULE_PATH}" "${PYTHON_BIN}" - <<'PY'
 import importlib
 
@@ -847,7 +851,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 expected = {
-    "containers/images/preflight.sh": "05454af523fc7c21a4c68cb439fd423c01aaefb9b92b04e75b03194321d2e3ba",
+    "containers/images/preflight.sh": "1bf94512d923689121e7280d9b7f67bb45063f83488d96d7681fa02e6bf412a4",
     "containers/images/build-image.sh": "6971909c2a81a460e09ab4cf585998dabca9a0ba933f24a2fa7a0551c5f8da13",
     "containers/images/tests/validate-locks.sh": "fe743dbd9e9a7862109d887050f4a411bbf18917fe5b1d6d8df36c1c93bba7b2",
     "containers/images/tests/preflight-test.sh": "99db8a48f142b1833fc480f4f0209e181029b143dc877dd0d6e50ee5d406a679",
@@ -864,8 +868,8 @@ expected = {
     "containers/images/tests/build-image-plan-test.sh": "c76c2f208f2c20b6c5064e2899b17362e97d114e44f4787d71ba63b88b94f617",
     "ci/tests/no-direct-install-surface-test.py": "99e77a6248def13a944fce5490ad1b51101c3b1867ff5b00674cd9ca1a6f38c5",
     "ci/tests/no_direct_install_inputs.py": "3f84b748f5213199db3e037f6b824c7265ce867f2d7ba88fd9b6987de3ef1f19",
-    "ci/tests/nscale-vlad-runbook-test.py": "6955727608b5028680ee0c461ab0ce31ba70ffcbba621523e66bbb6eb5aff9b5",
-    "ci/verify-vlad-source-approval.py": "ded761fb53eb5d7027aff2a181e929950657547cf753e621b094f6bd71142c49",
+    "ci/tests/nscale-vlad-runbook-test.py": "d852d506cedeef2fde9c12617ca20c435ec0599becd680594e3cd782b67c119c",
+    "ci/verify-vlad-source-approval.py": "6a57cc95ef4ce27d077529950b84ca3d8abe8903ca9a3ea9aa0f4c492be10a77",
     "ci/install-validated-sqsh.py": "e2163e20271724fd09e65563d9e9508cdff7673473e1bfc1fcb15d480b194ef6",
     "ci/validated_sqsh_installer.py": "6e0004106b6d9164fd2bbf690841a3a7210ad41fdda2f88d02bfc5458ef55612",
     "ci/validated_sqsh_installer_selftest.py": "58c30e89485f7542327e20bcacd279e24b2ea786633200f2fa5a4af53b601d87",
@@ -1616,6 +1620,12 @@ self_test_cache_cleanup() {
             fail "cache cleanup fixture retained exact observed path: ${relative}"
     done
 
+    mkdir -p "${fixture}/envs/vlad/tests/__pycache__"
+    : >"${fixture}/envs/vlad/tests/__pycache__/target_policy_yaml.cpython-312.pyc"
+    cleanup_observed_python_caches "${fixture}"
+    [ ! -e "${fixture}/envs/vlad/tests/__pycache__" ] || \
+        fail "cache cleanup rejected a partial bounded known cache inventory"
+
     for relative in "${PRODUCT_CACHE_DIRECTORIES[@]}"; do
         mkdir -p "${fixture}/${relative}"
     done
@@ -1651,7 +1661,7 @@ self_test_cache_cleanup() {
     [ "${status}" -ne 0 ] && [[ "${output}" == *"cache cleanup refused non-regular or symlink entry"* ]] || \
         fail "cache cleanup did not reject a symlinked observed file"
     [ -L "${symlink_fixture}/${PRODUCT_CACHE_FILES[0]}" ] || fail "cache cleanup modified symlink fixture before rejecting it"
-    printf 'PASS: cache cleanup is exact, owner/type checked, and fail-before-write on inventory drift\n'
+    printf 'PASS: cache cleanup accepts bounded partial inventories, checks owner/type, and fails before writes on drift\n'
 }
 
 self_test_signal_cleanup() {
@@ -1809,7 +1819,8 @@ run_self_test() {
 }
 
 resolve_runtime_configuration
-require_file "${PYTHON_BIN}"
+require_executable "${PYTHON_BIN}"
+require_executable "${TARGET_POLICY_PYTHON_BIN}"
 HOST_TEMP_ROOT="$(capture_secure_host_temp_root "${HOST_TMPDIR_INPUT}")"
 
 case "${1:-}" in

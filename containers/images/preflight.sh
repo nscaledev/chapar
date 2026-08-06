@@ -350,7 +350,7 @@ def machine_identity(path: Path) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def command_path(name: str, test_mode: bool) -> str | None:
+def command_path(name: str, test_mode: bool, tool_root: Path | None = None) -> str | None:
     if test_mode:
         directory = os.environ.get("VLAD_PREFLIGHT_TEST_TOOL_DIR")
         root = os.environ.get("VLAD_PREFLIGHT_TEST_ROOT")
@@ -361,13 +361,71 @@ def command_path(name: str, test_mode: bool) -> str | None:
         if not under(resolved, Path(root).resolve()) or not os.access(candidate, os.X_OK):
             return None
         return str(resolved)
+    if tool_root is not None:
+        candidate = tool_root / name
+        try:
+            info = candidate.lstat()
+        except OSError:
+            return None
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022 or stat.S_IMODE(info.st_mode) & 0o111 == 0:
+            return None
+        return str(candidate)
     return shutil.which(name)
 
 
-def verify_pinned_tools(source_lock: dict[str, Any], identities: tuple[str, ...], native_arch: str, test_mode: bool, timeout_seconds: int) -> dict[str, str]:
+def open_pinned_tool(path: str, identity: str, test_mode: bool) -> tuple[str, str, int | None]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        fail(f"cannot open pinned tool binary securely {identity}: {error}")
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            fail(f"pinned tool binary is not a regular file: {identity}")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        identity_tuple = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if identity_tuple(before) != identity_tuple(after):
+            fail(f"pinned tool binary changed while open: {identity}")
+        if test_mode:
+            os.close(descriptor)
+            return path, digest.hexdigest(), None
+        return f"/dev/fd/{descriptor}", digest.hexdigest(), descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def protected_tool_root(path: Path) -> None:
+    if path != Path(os.path.realpath(path)):
+        fail(f"tool root must be canonical and contain no symlink: {path}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open("/", flags)
+    try:
+        root_info = os.fstat(descriptor)
+        if root_info.st_uid != 0 or stat.S_IMODE(root_info.st_mode) & 0o022:
+            fail("filesystem root is not UID 0-owned and nonwritable")
+        for part in path.parts[1:]:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+            info = os.fstat(descriptor)
+            if info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+                fail(f"tool root is not UID 0-owned and nonwritable: {path}")
+    except OSError as error:
+        fail(f"tool root cannot be opened securely: {error}")
+    finally:
+        os.close(descriptor)
+
+
+def verify_pinned_tools(source_lock: dict[str, Any], identities: tuple[str, ...], native_arch: str, test_mode: bool, timeout_seconds: int, tool_root: Path | None = None) -> tuple[dict[str, str], tuple[int, ...]]:
     entries = source_lock["verified"]["builder_tools"]
     by_id = {entry["id"]: entry for entry in entries}
     commands: dict[str, str] = {}
+    descriptors: list[int] = []
     version_commands = {
         "enroot": lambda found: [found["enroot"], "version"],
         "squashfs-tools": lambda found: [found["mksquashfs"], "-version"],
@@ -381,22 +439,23 @@ def verify_pinned_tools(source_lock: dict[str, Any], identities: tuple[str, ...]
         pinned = {binary["name"]: binary["sha256"] for binary in entry["assets"][native_arch]["binaries"]}
         found: dict[str, str] = {}
         for name, expected_sha256 in pinned.items():
-            path = command_path(name, test_mode)
+            path = command_path(name, test_mode, tool_root)
             if path is None:
                 fail(f"required pinned tool binary is missing: {identity}/{name}")
-            try:
-                actual_sha256 = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-            except OSError as error:
-                fail(f"cannot hash pinned tool binary {identity}/{name}: {error}")
+            command, actual_sha256, descriptor = open_pinned_tool(path, f"{identity}/{name}", test_mode)
             if actual_sha256 != expected_sha256:
+                if descriptor is not None:
+                    os.close(descriptor)
                 fail(f"pinned tool binary checksum mismatch: {identity}/{name}")
-            found[name] = path
-            commands[name] = path
-        version_output = run_probe(version_commands[identity](found), timeout_seconds)
+            if descriptor is not None:
+                descriptors.append(descriptor)
+            found[name] = command
+            commands[name] = command
+        version_output = run_probe(version_commands[identity](found), timeout_seconds, tuple(descriptors))
         version_pattern = re.compile(rf"(?<![A-Za-z0-9.+:~_-]){re.escape(entry['version'])}(?![A-Za-z0-9.+:~_-])")
         if version_pattern.search(version_output) is None:
             fail(f"pinned tool version mismatch: {identity}")
-    return commands
+    return commands, tuple(descriptors)
 
 
 def require_tools(names: tuple[str, ...], test_mode: bool) -> dict[str, str]:
@@ -411,9 +470,9 @@ def require_tools(names: tuple[str, ...], test_mode: bool) -> dict[str, str]:
     return found
 
 
-def run_probe(command: list[str], timeout_seconds: int) -> str:
+def run_probe(command: list[str], timeout_seconds: int, pass_fds: tuple[int, ...] = ()) -> str:
     try:
-        completed = subprocess.run(command, check=False, text=True, capture_output=True, timeout=timeout_seconds)
+        completed = subprocess.run(command, check=False, text=True, capture_output=True, timeout=timeout_seconds, pass_fds=pass_fds)
     except (OSError, subprocess.TimeoutExpired) as error:
         fail(f"capability probe failed or timed out: {command[0]}: {error}")
     if completed.returncode != 0:
@@ -628,6 +687,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image-root", required=True)
     parser.add_argument("--site-contract", default=DEFAULT_CONTRACT)
     parser.add_argument("--site-contract-sha256", default=os.environ.get("VLAD_IMAGE_SITE_CONTRACT_SHA256"))
+    parser.add_argument("--tool-root")
     parser.add_argument("--mode", required=True, choices=("build", "runtime", "publisher"))
     return parser.parse_args()
 
@@ -668,6 +728,8 @@ def main() -> int:
         fail(f"--sha256 is required in {args.mode} mode")
     if args.site_contract_sha256 is None or SHA256_RE.fullmatch(args.site_contract_sha256) is None:
         fail("--site-contract-sha256 is required and must be a full lowercase SHA-256")
+    if not test_mode and args.mode in {"build", "runtime"} and args.tool_root is None:
+        fail(f"--tool-root is required in {args.mode} mode")
 
     paths = {
         "candidate_root": validate_absolute_path(args.candidate_root, "candidate root"),
@@ -679,6 +741,11 @@ def main() -> int:
         validate_not_workspace(path, label)
         if test_mode:
             validate_test_path(path, label, test_root)
+    tool_root = validate_absolute_path(args.tool_root, "tool root") if args.tool_root is not None else None
+    if tool_root is not None:
+        validate_not_workspace(tool_root, "tool root")
+        if not test_mode:
+            protected_tool_root(tool_root)
     if not test_mode and paths["site_contract"] != Path(DEFAULT_CONTRACT):
         fail("production site contract path is fixed and cannot be overridden")
 
@@ -764,8 +831,9 @@ def main() -> int:
     qualified_candidate = paths["candidate_root"] / args.target / args.image_id
     selected_image_root = paths["image_root"] / args.target
     capabilities: dict[str, Any] = {}
+    pinned_descriptors: tuple[int, ...] = ()
     if args.mode == "build":
-        tools = verify_pinned_tools(source_lock, BUILD_TOOLS[args.target], native_arch, test_mode, timeout_seconds)
+        tools, pinned_descriptors = verify_pinned_tools(source_lock, BUILD_TOOLS[args.target], native_arch, test_mode, timeout_seconds, tool_root)
         tools.update(require_tools(("python3",), test_mode))
         require_directory(qualified_candidate, "target/image-qualified candidate work root", writable=True)
         candidate_fs = require_nfs(qualified_candidate, test_mode, test_root, timeout_seconds)
@@ -780,12 +848,13 @@ def main() -> int:
         if not test_mode:
             base = BASES[args.base]
             descriptor = source_lock["verified"][base["lock_category"]]["platforms"][args.target]["descriptor_digest"]
-            run_probe([tools["skopeo"], "inspect", f"docker://{base['image']}@{descriptor}"], timeout_seconds)
+            run_probe([tools["skopeo"], "inspect", f"docker://{base['image']}@{descriptor}"], timeout_seconds, pinned_descriptors)
         capabilities = {"candidate_filesystem": candidate_fs.get("fstype"), "free_bytes": free_bytes, "required_tools": sorted(tools)}
     elif args.mode == "runtime":
         runtime_tools = ("srun", "enroot", "python3", "lscpu") if args.target in X86_ISA_LEVEL else ("srun", "enroot", "python3", "nvidia-smi")
         tools = require_tools(runtime_tools, test_mode)
-        tools.update(verify_pinned_tools(source_lock, ("enroot",), native_arch, test_mode, timeout_seconds))
+        pinned_tools, pinned_descriptors = verify_pinned_tools(source_lock, ("enroot",), native_arch, test_mode, timeout_seconds, tool_root)
+        tools.update(pinned_tools)
         sealed_candidate = qualified_candidate / args.sha256
         receipt_root = paths["validation_root"] / args.target / args.image_id / args.sha256
         require_directory(sealed_candidate, "SHA-qualified sealed candidate", writable=False)
@@ -826,6 +895,8 @@ def main() -> int:
             "required_tools": sorted(tools),
         }
 
+    for descriptor in pinned_descriptors:
+        os.close(descriptor)
     boot_id_path = Path(os.environ.get("VLAD_PREFLIGHT_TEST_BOOT_ID", "/proc/sys/kernel/random/boot_id")) if test_mode else Path("/proc/sys/kernel/random/boot_id")
     try:
         boot_id = boot_id_path.read_text(encoding="ascii").strip()

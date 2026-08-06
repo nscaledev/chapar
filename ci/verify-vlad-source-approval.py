@@ -421,16 +421,48 @@ def validate_release(data: JsonMap, inputs: ReleaseInputs | None = None) -> None
         require(data == expected, "release binding fields do not match expected inputs")
 
 
-def validate_builder_tools(data: JsonMap, target: str) -> None:
+def locked_builder_tools(build_root: str, source_lock_sha: str, target: str) -> dict[str, str]:
+    source_lock = read_file(f"{build_root}/containers/images/sources-lock.json", "source lock")
+    require(source_lock.sha256 == source_lock_sha, "builder source lock content mismatch")
+    document = parse_json(source_lock.content)
+    verified = document.get("verified")
+    require(type(verified) is dict, "source lock verified section must be an object")
+    entries = verified.get("builder_tools") if isinstance(verified, dict) else None
+    require(type(entries) is list, "source lock builder_tools must be an array")
+    expected: dict[str, str] = {}
+    native_arch = TARGET_NATIVE_ARCH[target]
+    for entry in entries if isinstance(entries, list) else []:
+        require(type(entry) is dict, "source lock builder tool entry must be an object")
+        assets = entry.get("assets") if isinstance(entry, dict) else None
+        require(type(assets) is dict, "source lock builder tool assets must be an object")
+        native = assets.get(native_arch) if isinstance(assets, dict) else None
+        require(type(native) is dict, f"source lock builder tool is missing architecture: {native_arch}")
+        binaries = native.get("binaries") if isinstance(native, dict) else None
+        require(type(binaries) is list, "source lock builder tool binaries must be an array")
+        for binary in binaries if isinstance(binaries, list) else []:
+            require(type(binary) is dict, "source lock builder tool binary must be an object")
+            name = binary.get("name") if isinstance(binary, dict) else None
+            if name in {"enroot", "skopeo"}:
+                require(name not in expected, f"source lock builder tool is duplicated: {name}")
+                digest = binary.get("sha256") if isinstance(binary, dict) else None
+                require(type(digest) is str, f"source lock builder tool digest must be a string: {name}")
+                expected[name] = require_sha(digest, f"source lock builder tool digest: {name}")
+    require(set(expected) == {"enroot", "skopeo"}, "source lock does not bind both builder tools")
+    return expected
+
+
+def validate_builder_tools(data: JsonMap, target: str, expected: dict[str, str]) -> None:
     require_schema(data, BUILDER_TOOLS_SCHEMA)
     require(expect_string(data, "target") == target, "builder tool evidence target mismatch")
     require(expect_string(data, "native_arch") == TARGET_NATIVE_ARCH[target], "builder tool evidence architecture mismatch")
     tools = data.get("tools")
     require(type(tools) is dict and set(tools) == {"enroot", "skopeo"}, "builder tool evidence identities mismatch")
+    actual: dict[str, str] = {}
     for name in ("enroot", "skopeo"):
         value = tools.get(name) if isinstance(tools, dict) else None
         require(type(value) is str, f"builder tool evidence {name} digest must be a string")
-        require_sha(value, f"builder tool evidence {name} digest")
+        actual[name] = require_sha(value, f"builder tool evidence {name} digest")
+    require(actual == expected, "builder tool evidence differs from source lock")
 
 
 def validate_builder(data: JsonMap, expected_commit: str | None = None) -> None:
@@ -440,6 +472,7 @@ def validate_builder(data: JsonMap, expected_commit: str | None = None) -> None:
     if expected_commit is not None:
         require(commit == require_commit(expected_commit), "builder commit mismatch")
     source_lock_sha = require_sha(expect_string(data, "source_lock_sha256"), "source lock digest")
+    expected_builder_tools = locked_builder_tools(build_root, source_lock_sha, require_target(expect_string(data, "target")))
     release_path = canonical_absolute(expect_string(data, "release_binding"), "release binding")
     release_json, release_file = receipt(release_path)
     validate_release(release_json)
@@ -454,7 +487,7 @@ def validate_builder(data: JsonMap, expected_commit: str | None = None) -> None:
     builder_tools_path = canonical_absolute(expect_string(data, "builder_tools"), "builder tool evidence")
     require(os.path.dirname(builder_tools_path) == validation_root, "builder tool evidence is outside validation root")
     builder_tools_json, builder_tools_file = receipt(builder_tools_path)
-    validate_builder_tools(builder_tools_json, target)
+    validate_builder_tools(builder_tools_json, target, expected_builder_tools)
     require(builder_tools_file.sha256 == require_sha(expect_string(data, "builder_tools_sha256"), "builder tool evidence digest"), "builder tool evidence digest mismatch")
     require_identifier(expect_string(data, "image_id"), "image_id")
     image_path = canonical_absolute(expect_string(data, "image_path"), "image path")
@@ -479,13 +512,15 @@ def builder_data(args: argparse.Namespace) -> JsonMap:
     builder_tools_path = canonical_absolute(required(args.builder_tools, "builder tool evidence"), "builder tool evidence")
     require(os.path.dirname(builder_tools_path) == validation_root, "builder tool evidence is outside validation root")
     builder_tools_json, builder_tools_file = receipt(builder_tools_path)
-    validate_builder_tools(builder_tools_json, require_target(args.target))
+    target = require_target(args.target)
+    source_lock_sha = require_sha(args.source_lock_sha256, "source lock digest")
+    validate_builder_tools(builder_tools_json, target, locked_builder_tools(build_root, source_lock_sha, target))
     data: JsonMap = {
         "schema": BUILDER_SCHEMA, "build_root": build_root,
         "chapar_commit": require_commit(args.chapar_commit),
-        "source_lock_sha256": require_sha(args.source_lock_sha256, "source lock digest"),
+        "source_lock_sha256": source_lock_sha,
         "release_binding": canonical_absolute(args.release_binding, "release binding"),
-        "release_binding_sha256": release_file.sha256, "target": require_target(args.target),
+        "release_binding_sha256": release_file.sha256, "target": target,
         "image_id": require_identifier(args.image_id, "image_id"),
         "image_path": canonical_absolute(args.image, "image path"),
         "image_sha256": image.sha256, "image_size": image.size,
@@ -818,6 +853,15 @@ def self_test() -> None:
         spack_lock = build_root / "envs/vlad/spack.lock"
         spack_lock.parent.mkdir(parents=True)
         spack_lock.write_text('{"lock":"fixture"}\n', encoding="utf-8")
+        source_lock = build_root / "containers/images/sources-lock.json"
+        source_lock.parent.mkdir(parents=True)
+        source_lock.write_text(json.dumps({
+            "verified": {"builder_tools": [
+                {"assets": {"x86_64": {"binaries": [{"name": "enroot", "sha256": "c" * 64}]}}},
+                {"assets": {"x86_64": {"binaries": [{"name": "skopeo", "sha256": "d" * 64}]}}},
+            ]},
+        }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        source_lock_sha = hashlib.sha256(source_lock.read_bytes()).hexdigest()
         release_dir = root / "vlad/linux/releases/release-1"
         release_dir.mkdir(parents=True)
         metadata = release_dir / "metadata.txt"
@@ -825,7 +869,7 @@ def self_test() -> None:
         validation_root = root / "validation"
         validation_root.mkdir()
         release_path = validation_root / "release-binding.json"
-        release_inputs_fixture = ReleaseInputs(str(release_path), str(release_dir), str(metadata), str(spack_lock), "a" * 40, "b" * 64, "linux-x86_64-v4", "release-1", "integrity-passed")
+        release_inputs_fixture = ReleaseInputs(str(release_path), str(release_dir), str(metadata), str(spack_lock), "a" * 40, source_lock_sha, "linux-x86_64-v4", "release-1", "integrity-passed")
         release_json = release_data(release_inputs_fixture)
         write_exclusive_json(str(release_path), release_json)
         validate_release(receipt(str(release_path))[0], release_inputs_fixture)
@@ -851,7 +895,7 @@ def self_test() -> None:
         builder_path = validation_root / "builder-handoff.json"
         builder_json: JsonMap = {
             "schema": BUILDER_SCHEMA, "build_root": str(build_root),
-            "chapar_commit": "a" * 40, "source_lock_sha256": "b" * 64,
+            "chapar_commit": "a" * 40, "source_lock_sha256": source_lock_sha,
             "release_binding": str(release_path),
             "release_binding_sha256": hashlib.sha256(release_path.read_bytes()).hexdigest(),
             "target": "linux-x86_64-v4", "image_id": "image-1",
@@ -865,6 +909,15 @@ def self_test() -> None:
         cases.append("builder-schema-happy")
         cases.append(expect_child_failure("builder-image-hash-drift", lambda: validate_builder(mutated(builder_json, "image_sha256", "0" * 64)), "builder image digest mismatch"))
         cases.append(expect_child_failure("builder-tools-hash-drift", lambda: validate_builder(mutated(builder_json, "builder_tools_sha256", "0" * 64)), "builder tool evidence digest mismatch"))
+        builder_tools_path.chmod(0o644)
+        unbound_builder_tools = builder_tools_path.read_text(encoding="utf-8").replace('"enroot":"' + "c" * 64, '"enroot":"' + "e" * 64)
+        builder_tools_path.write_text(unbound_builder_tools, encoding="utf-8")
+        builder_tools_path.chmod(0o444)
+        unbound_builder = mutated(builder_json, "builder_tools_sha256", hashlib.sha256(builder_tools_path.read_bytes()).hexdigest())
+        cases.append(expect_child_failure("builder-tools-not-source-bound", lambda: validate_builder(unbound_builder), "builder tool evidence differs from source lock"))
+        builder_tools_path.chmod(0o644)
+        builder_tools_path.write_text('{"native_arch":"x86_64","schema":"chapar-vlad-builder-tools/v1","target":"linux-x86_64-v4","tools":{"enroot":"' + "c" * 64 + '","skopeo":"' + "d" * 64 + '"}}\n', encoding="utf-8")
+        builder_tools_path.chmod(0o444)
         cases.append(expect_child_failure("builder-receipt-unknown-key", lambda: validate_builder({**builder_json, "unknown": "rejected"}), "key set mismatch"))
 
         validator_image_root = root / "validator-images"

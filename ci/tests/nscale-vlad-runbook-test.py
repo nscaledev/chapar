@@ -63,15 +63,15 @@ SCHEMAS: Final = {
 }
 REQUIRED_BLOCK_ANCHORS: Final = (
     ': "${CHAPAR_COMMIT:?}" "${SOURCE_APPROVAL_RECEIPT:?}"',
-    'bash envs/vlad/release.sh build "$RELEASE_ID"',
+    'ENV_PATH="$BUILD_ROOT/envs/vlad" /bin/bash "$BUILDER_CODE_ROOT/envs/vlad/release.sh" build "$RELEASE_ID"',
     'SOURCE_CLONE_ROOT=/home/hpcadmin/chapar-sources/$CHAPAR_COMMIT-$TARGET',
     'test "$BUILDER_CODE_ROOT" = "/vast/chapar-builder-code/$CHAPAR_COMMIT"',
-    'python3 "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT"',
+    '/usr/bin/python3 "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT"',
     '--tool-root "$TOOL_ROOT" --tool-evidence "$BUILDER_TOOL_EVIDENCE"',
     '--builder-tools "$BUILDER_TOOL_EVIDENCE"',
     'grep -Fx "release_id: $RELEASE_ID" "$RELEASE_DIR/metadata.txt"',
-    'MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad ./validation/run integrity-test',
-    'bash envs/vlad/release.sh promote "$RELEASE_ID"',
+    'MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad /bin/bash "$BUILDER_CODE_ROOT/validation/run" integrity-test',
+    'ENV_PATH="$BUILD_ROOT/envs/vlad" /bin/bash "$BUILDER_CODE_ROOT/envs/vlad/release.sh" promote "$RELEASE_ID"',
     '--write-builder-handoff "$BUILDER_HANDOFF"',
     'test "$PYXIS_JOB_APPROVED" = yes',
     '--write-runtime-receipt "$RUNTIME_RECEIPT"',
@@ -165,6 +165,8 @@ def validate_runbook(path: Path) -> None:
         require(builder.count(anchor) == 1, f"builder protected gate drift: {anchor}")
         require(validator.count(anchor) == 1, f"validator protected gate drift: {anchor}")
         require(publisher.count(anchor) == 1, f"publisher protected gate drift: {anchor}")
+    for forbidden in ("bash envs/vlad/release.sh", "python3 ci/verify-vlad-source-approval.py", "./validation/run", "bash containers/images/"):
+        require(forbidden not in builder, f"builder executes repository code outside protected checkout: {forbidden}")
     for block, role in ((validator, "validator"), (publisher, "publisher")):
         require("env -i PATH=/usr/bin:/bin" in block, f"{role} Git environment is not empty")
         require("core.untrackedCache=false" in block, f"{role} untracked cache is not disabled")
@@ -478,8 +480,8 @@ def run_self_test() -> None:
         "missing-protected-gate": (text.replace("result = libc.syscall(439", "result = libc.syscall(440", 1), "builder protected gate drift"),
         "builder-writable-publisher-root": (text.replace('test "$PUBLISHER_CODE_ROOT" = "/vast/chapar-publisher-code/$CHAPAR_COMMIT"', 'test "$PUBLISHER_CODE_ROOT" = "/vast/chapar-builder-writable/$CHAPAR_COMMIT"', 1), "missing or duplicate normative anchor"),
         "promoted-before-integrity": text.replace(
-            'MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad ./validation/run integrity-test',
-            'bash envs/vlad/release.sh promote "$RELEASE_ID"', 1),
+            'MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad /bin/bash "$BUILDER_CODE_ROOT/validation/run" integrity-test',
+            'ENV_PATH="$BUILD_ROOT/envs/vlad" /bin/bash "$BUILDER_CODE_ROOT/envs/vlad/release.sh" promote "$RELEASE_ID"', 1),
     }
     mutations["promoted-before-integrity"] = (mutations["promoted-before-integrity"], "missing or duplicate normative anchor")
     for label, (mutation, expected) in mutations.items():

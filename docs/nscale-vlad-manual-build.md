@@ -39,7 +39,7 @@ missing/ambiguous release, failed integrity, or blocked/incomplete source lock.
 ```bash
 set -euo pipefail
 verify_protected_checkout() {
-  python3 - "$@" <<'PY'
+  /usr/bin/python3 - "$@" <<'PY'
 import ctypes, errno, os, stat, subprocess, sys
 root, commit, *relative_paths = sys.argv[1:]
 def require(ok, message):
@@ -89,6 +89,7 @@ for relative_path in relative_paths:
 PY
 }
 : "${CHAPAR_COMMIT:?}" "${SOURCE_APPROVAL_RECEIPT:?}" "${SOURCE_APPROVAL_SHA256:?}" "${EXPECTED_APPROVED_BY:?}" "${EXPECTED_CHANGE_TICKET:?}" "${TARGET:?}" "${RELEASE_ID:?}" "${IMAGE_ID:?}" "${PARTITION:?}" "${SITE_CONTRACT_SHA256:?}"
+export PATH=/usr/bin:/bin
 [[ "$CHAPAR_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 [[ "$SOURCE_APPROVAL_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$SITE_CONTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]]
@@ -109,31 +110,32 @@ CHAPAR_REMOTE=https://github.com/nscaledev/chapar.git
 test "$(findmnt -n -o TARGET -T /vast)" = /vast; [[ "$(findmnt -n -o FSTYPE -T /vast)" =~ ^nfs4?$ ]]
 test "$(findmnt -n -o TARGET -T "$FINAL_ROOT")" = /home; [[ "$(findmnt -n -o FSTYPE -T "$FINAL_ROOT")" =~ ^nfs4?$ ]]
 df -hT /home/hpcadmin /vast; for protected in "$FINAL_ROOT" "$TOOL_ROOT" "$VALIDATOR_ROOT" "$BUILDER_CODE_ROOT" "$VALIDATOR_CODE_ROOT" "$VALIDATOR_IMAGE_ROOT" "$PUBLISHER_CODE_ROOT" "$PUBLISHER_EVIDENCE_ROOT"; do test -d "$protected"; test ! -w "$protected"; done
-command -v git bash python3 enroot skopeo srun sha256sum
+test -x /usr/bin/git; test -x /bin/bash; test -x /usr/bin/python3
 test "$BUILDER_CODE_ROOT" = "/vast/chapar-builder-code/$CHAPAR_COMMIT"
-verify_protected_checkout "$BUILDER_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py
+verify_protected_checkout "$BUILDER_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py etc/install-spack.sh etc/init.sh envs/vlad/release.sh envs/vlad/tests/target-policy-test.py envs/vlad/tests/target_policy_yaml.py validation/run validation/tests/integrity-test.sbatch containers/images/preflight.sh containers/images/build-image.sh containers/images/targets.json containers/images/sources-lock.json containers/images/tests/validate-locks.sh
 BUILDER_HELPER="$BUILDER_CODE_ROOT/ci/verify-vlad-source-approval.py"
 install -d -m 0755 /home/hpcadmin/chapar-sources
 test ! -e "$SOURCE_CLONE_ROOT"
-git clone --filter=blob:none --no-checkout "$CHAPAR_REMOTE" "$SOURCE_CLONE_ROOT"
-git -C "$SOURCE_CLONE_ROOT" fetch --depth=1 origin "$CHAPAR_COMMIT"
-git -C "$SOURCE_CLONE_ROOT" checkout --detach "$CHAPAR_COMMIT"
-test "$(git -C "$SOURCE_CLONE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"
-test "$(git -C "$SOURCE_CLONE_ROOT" cat-file -t "$CHAPAR_COMMIT")" = commit
-test -z "$(git -C "$SOURCE_CLONE_ROOT" status --porcelain)"
-APPROVAL_JSON="$(python3 "$BUILDER_HELPER" --receipt "$SOURCE_APPROVAL_RECEIPT" --expected-sha256 "$SOURCE_APPROVAL_SHA256" --expected-approved-by "$EXPECTED_APPROVED_BY" --expected-change-ticket "$EXPECTED_CHANGE_TICKET" --chapar-root "$SOURCE_CLONE_ROOT")"
+/usr/bin/git clone --filter=blob:none --no-checkout "$CHAPAR_REMOTE" "$SOURCE_CLONE_ROOT"
+/usr/bin/git -C "$SOURCE_CLONE_ROOT" fetch --depth=1 origin "$CHAPAR_COMMIT"
+/usr/bin/git -C "$SOURCE_CLONE_ROOT" checkout --detach "$CHAPAR_COMMIT"
+test "$(/usr/bin/git -C "$SOURCE_CLONE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"
+test "$(/usr/bin/git -C "$SOURCE_CLONE_ROOT" cat-file -t "$CHAPAR_COMMIT")" = commit
+test -z "$(/usr/bin/git -C "$SOURCE_CLONE_ROOT" status --porcelain)"
+APPROVAL_JSON="$(/usr/bin/python3 "$BUILDER_HELPER" --receipt "$SOURCE_APPROVAL_RECEIPT" --expected-sha256 "$SOURCE_APPROVAL_SHA256" --expected-approved-by "$EXPECTED_APPROVED_BY" --expected-change-ticket "$EXPECTED_CHANGE_TICKET" --chapar-root "$SOURCE_CLONE_ROOT")"
 APPROVED_SOURCE_LOCK="$SOURCE_CLONE_ROOT/containers/images/sources-lock.json"
-APPROVED_LOCK_SHA256="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["source_lock_sha256"])' <<<"$APPROVAL_JSON")"
-test ! -e "$BUILD_ROOT"; mkdir -p "$(dirname "$BUILD_ROOT")"; git -C "$SOURCE_CLONE_ROOT" worktree add --detach "$BUILD_ROOT" "$CHAPAR_COMMIT"
+APPROVED_LOCK_SHA256="$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["source_lock_sha256"])' <<<"$APPROVAL_JSON")"
+test ! -e "$BUILD_ROOT"; mkdir -p "$(dirname "$BUILD_ROOT")"; /usr/bin/git -C "$SOURCE_CLONE_ROOT" worktree add --detach "$BUILD_ROOT" "$CHAPAR_COMMIT"
 cd "$BUILD_ROOT"; SOURCE_LOCK="$BUILD_ROOT/containers/images/sources-lock.json"
-verify_lock(){ local source_hash build_hash; source_hash="$(sha256sum "$APPROVED_SOURCE_LOCK" | awk '{print $1}')"; build_hash="$(sha256sum "$SOURCE_LOCK" | awk '{print $1}')"; test "$source_hash" = "$APPROVED_LOCK_SHA256"; test "$build_hash" = "$APPROVED_LOCK_SHA256"; python3 "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT" --expected-chapar-commit "$CHAPAR_COMMIT" --allow-generated-spack-lock; if test -n "${GENERATED_LOCK_SHA256:-}"; then test "$(sha256sum "$BUILD_ROOT/envs/vlad/spack.lock" | awk '{print $1}')" = "$GENERATED_LOCK_SHA256"; fi; bash containers/images/tests/validate-locks.sh --require-complete; }
+verify_lock(){ local source_hash build_hash; source_hash="$(sha256sum "$APPROVED_SOURCE_LOCK" | awk '{print $1}')"; build_hash="$(sha256sum "$SOURCE_LOCK" | awk '{print $1}')"; test "$source_hash" = "$APPROVED_LOCK_SHA256"; test "$build_hash" = "$APPROVED_LOCK_SHA256"; /usr/bin/python3 "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT" --expected-chapar-commit "$CHAPAR_COMMIT" --allow-generated-spack-lock; if test -n "${GENERATED_LOCK_SHA256:-}"; then test "$(sha256sum "$BUILD_ROOT/envs/vlad/spack.lock" | awk '{print $1}')" = "$GENERATED_LOCK_SHA256"; fi; SOURCES_PATH_OVERRIDE="$SOURCE_LOCK" /bin/bash "$BUILDER_CODE_ROOT/containers/images/tests/validate-locks.sh" --require-complete; }
 verify_lock
-read -r SPACK_CORE_COMMIT SPACK_PACKAGES_COMMIT < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); r={x["id"]:x["commit"] for x in d["verified"]["spack_repositories"]}; print(r["spack-core"], r["spack-packages"])' "$SOURCE_LOCK")
+read -r SPACK_CORE_COMMIT SPACK_PACKAGES_COMMIT < <(/usr/bin/python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); r={x["id"]:x["commit"] for x in d["verified"]["spack_repositories"]}; print(r["spack-core"], r["spack-packages"])' "$SOURCE_LOCK")
 [[ "$SPACK_CORE_COMMIT" =~ ^[0-9a-f]{40}$ && "$SPACK_PACKAGES_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-CHAPAR_SPACK_ROOT="$SPACK_ROOT" SPACK_REF="$SPACK_CORE_COMMIT" bash etc/install-spack.sh
+CHAPAR_SPACK_ROOT="$SPACK_ROOT" SPACK_REF="$SPACK_CORE_COMMIT" /bin/bash "$BUILDER_CODE_ROOT/etc/install-spack.sh"
 test "$(git -C "$SPACK_ROOT" rev-parse HEAD)" = "$SPACK_CORE_COMMIT"
 export CHAPAR_SPACK_ROOT="$SPACK_ROOT" CHAPAR_SITE_CONFIG=/dev/null
-source "$SPACK_ROOT/share/spack/setup-env.sh"; source "$BUILD_ROOT/etc/init.sh"
+source "$SPACK_ROOT/share/spack/setup-env.sh"; source "$BUILDER_CODE_ROOT/etc/init.sh"
+export CHAPAR_ROOT="$BUILD_ROOT" SPACK_USER_CONFIG_PATH="$BUILDER_CODE_ROOT/etc/user" SPACK_SYSTEM_CONFIG_PATH="$BUILDER_CODE_ROOT/etc/system"
 test "$CHAPAR_ROOT" = "$BUILD_ROOT"; test "$SPACK_ROOT" = "$CHAPAR_SPACK_ROOT"; test "$CHAPAR_SITE_CONFIG" = /dev/null
 test "$(git -C "$SOURCE_CLONE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"; test "$(git -C "$SOURCE_CLONE_ROOT" remote get-url origin)" = "$CHAPAR_REMOTE"
 test "$(git -C "$SPACK_ROOT" rev-parse HEAD)" = "$SPACK_CORE_COMMIT"
@@ -145,7 +147,7 @@ case "$TARGET" in linux-x86_64-v4) EXPECTED_NATIVE_ARCH=x86_64; EXPECTED_SPACK_F
 test "$(uname -m)" = "$EXPECTED_NATIVE_ARCH"; test "$(spack arch --family)" = "$EXPECTED_SPACK_FAMILY"
 mkdir -p "$VALIDATION_ROOT"
 spack -e envs/vlad spec --fresh --yaml zlib target="$(spack arch --family)" > "$VALIDATION_ROOT/native-spec.yaml"
-python3 envs/vlad/tests/target-policy-test.py --assert-concrete-yaml "$VALIDATION_ROOT/native-spec.yaml" --expected-target "$EXPECTED_CONCRETE_TARGET"
+/usr/bin/python3 "$BUILDER_CODE_ROOT/envs/vlad/tests/target-policy-test.py" --assert-concrete-yaml "$VALIDATION_ROOT/native-spec.yaml" --expected-target "$EXPECTED_CONCRETE_TARGET"
 spack -e envs/vlad concretize -f
 test -f envs/vlad/spack.lock
 GENERATED_LOCK_SHA256="$(sha256sum envs/vlad/spack.lock | awk '{print $1}')"
@@ -157,17 +159,17 @@ The same builder shell immediately continues with the next fence.
 verify_lock
 export VLAD_ROOT CHAPAR_INSTALL_TREE_ROOT="$INSTALL_ROOT" CHAPAR_BUILDCACHE_ROOT="$BUILDCACHE_ROOT" CCACHE_DIR="$CCACHE_ROOT" PUBLISH_BUILDCACHE=true
 test -z "$(find "$VLAD_ROOT" -type d -path "*/releases/$RELEASE_ID" -print -quit 2>/dev/null)"
-bash envs/vlad/release.sh build "$RELEASE_ID"
+ENV_PATH="$BUILD_ROOT/envs/vlad" /bin/bash "$BUILDER_CODE_ROOT/envs/vlad/release.sh" build "$RELEASE_ID"
 test "$(sha256sum envs/vlad/spack.lock | awk '{print $1}')" = "$GENERATED_LOCK_SHA256"
 mapfile -d '' RELEASE_METADATA < <(find "$VLAD_ROOT" -type f -path "*/releases/$RELEASE_ID/metadata.txt" -print0)
 test "${#RELEASE_METADATA[@]}" -eq 1
 RELEASE_DIR="$(dirname "${RELEASE_METADATA[0]}")"
 test -d "$RELEASE_DIR"
 grep -Fx "release_id: $RELEASE_ID" "$RELEASE_DIR/metadata.txt"
-MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad ./validation/run integrity-test
-python3 ci/verify-vlad-source-approval.py --write-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
-python3 ci/verify-vlad-source-approval.py --verify-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
-bash envs/vlad/release.sh promote "$RELEASE_ID"
+MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad /bin/bash "$BUILDER_CODE_ROOT/validation/run" integrity-test
+/usr/bin/python3 "$BUILDER_HELPER" --write-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
+/usr/bin/python3 "$BUILDER_HELPER" --verify-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
+ENV_PATH="$BUILD_ROOT/envs/vlad" /bin/bash "$BUILDER_CODE_ROOT/envs/vlad/release.sh" promote "$RELEASE_ID"
 verify_lock
 QUALIFIED_CANDIDATE="$CANDIDATE_ROOT/$TARGET/$IMAGE_ID"
 install -d -m 0755 "$CANDIDATE_ROOT/$TARGET"
@@ -183,10 +185,10 @@ findmnt -T "$CANDIDATE_ROOT/$TARGET/$IMAGE_ID"
 test -w "$CANDIDATE_ROOT/$TARGET/$IMAGE_ID"
 test ! -w "$BUILD_PREFLIGHT_IMAGE_ROOT"
 test ! -w "$BUILD_PREFLIGHT_IMAGE_ROOT/$TARGET"
-python3 ci/verify-vlad-source-approval.py --verify-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
-bash containers/images/preflight.sh --mode build --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATION_ROOT" --image-root "$BUILD_PREFLIGHT_IMAGE_ROOT" --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256"
+/usr/bin/python3 "$BUILDER_HELPER" --verify-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
+/bin/bash "$BUILDER_CODE_ROOT/containers/images/preflight.sh" --mode build --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATION_ROOT" --image-root "$BUILD_PREFLIGHT_IMAGE_ROOT" --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256" --tool-root "$TOOL_ROOT"
 BUILDER_TOOL_EVIDENCE="$VALIDATION_ROOT/builder-tools-$TARGET-$IMAGE_ID.json"
-bash containers/images/build-image.sh --base nvidia-vlad --target "$TARGET" --release-dir "$RELEASE_DIR" --image-id "$IMAGE_ID" --candidate-root "$CANDIDATE_ROOT" --enroot-build-root "/vast/enroot-cache/$(uname -m)" --tool-root "$TOOL_ROOT" --tool-evidence "$BUILDER_TOOL_EVIDENCE"
+/bin/bash "$BUILDER_CODE_ROOT/containers/images/build-image.sh" --base nvidia-vlad --target "$TARGET" --release-dir "$RELEASE_DIR" --image-id "$IMAGE_ID" --candidate-root "$CANDIDATE_ROOT" --enroot-build-root "/vast/enroot-cache/$(uname -m)" --tool-root "$TOOL_ROOT" --tool-evidence "$BUILDER_TOOL_EVIDENCE"
 CANDIDATE_PATH="$CANDIDATE_ROOT/$TARGET/$IMAGE_ID/nvidia-vlad+26.02-$TARGET.sqsh"
 test -f "$CANDIDATE_PATH"
 (cd "$(dirname "$CANDIDATE_PATH")" && sha256sum -c "$(basename "$CANDIDATE_PATH").sha256")
@@ -202,7 +204,7 @@ SEALED_PATH="$SEALED_DIR/$(basename "$CANDIDATE_PATH")"
 ln "$CANDIDATE_PATH" "$SEALED_PATH"
 chmod 0444 "$SEALED_PATH"; chmod 0555 "$SEALED_DIR"
 BUILDER_HANDOFF="$VALIDATION_ROOT/builder-handoff-$TARGET-$IMAGE_ID.json"
-python3 ci/verify-vlad-source-approval.py --write-builder-handoff "$BUILDER_HANDOFF" --build-root "$BUILD_ROOT" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --release-binding "$VALIDATION_ROOT/release-binding.json" --builder-tools "$BUILDER_TOOL_EVIDENCE" --target "$TARGET" --image-id "$IMAGE_ID" --image "$SEALED_PATH" --image-sha256 "$CANDIDATE_SHA256" --image-size "$CANDIDATE_SIZE"
+/usr/bin/python3 "$BUILDER_HELPER" --write-builder-handoff "$BUILDER_HANDOFF" --build-root "$BUILD_ROOT" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --release-binding "$VALIDATION_ROOT/release-binding.json" --builder-tools "$BUILDER_TOOL_EVIDENCE" --target "$TARGET" --image-id "$IMAGE_ID" --image "$SEALED_PATH" --image-sha256 "$CANDIDATE_SHA256" --image-size "$CANDIDATE_SIZE"
 BUILDER_HANDOFF_SHA256="$(sha256sum "$BUILDER_HANDOFF" | awk '{print $1}')"
 printf 'BUILDER_HANDOFF=%s\nBUILDER_HANDOFF_SHA256=%s\n' "$BUILDER_HANDOFF" "$BUILDER_HANDOFF_SHA256"
 ```
@@ -224,7 +226,7 @@ handoff drift, evidence identity/permission drift, runtime failure, or seal fail
 ```bash
 set -euo pipefail
 verify_protected_checkout() {
-  python3 - "$@" <<'PY'
+  /usr/bin/python3 - "$@" <<'PY'
 import ctypes, errno, os, stat, subprocess, sys
 root, commit, *relative_paths = sys.argv[1:]
 def require(ok, message):
@@ -275,10 +277,13 @@ PY
 }
 trusted_git() { local root="$1"; shift; env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 /usr/bin/git --no-pager --no-replace-objects -C "$root" -c "safe.directory=$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
 : "${VALIDATOR_CODE_ROOT:?}" "${CHAPAR_COMMIT:?}" "${BUILDER_HANDOFF:?}" "${BUILDER_HANDOFF_SHA256:?}" "${PYXIS_JOB_APPROVED:?}" "${PARTITION:?}" "${SITE_CONTRACT_SHA256:?}"
+export PATH=/usr/bin:/bin
 test "$PYXIS_JOB_APPROVED" = yes
 SITE_CONTRACT=/etc/chapar/vlad-image/site-contract.json
+TOOL_ROOT=/opt/chapar/vlad-image/tools/$(uname -m)
+test -d "$TOOL_ROOT"; test ! -w "$TOOL_ROOT"
 test "$VALIDATOR_CODE_ROOT" = "/vast/chapar-validator-code/$CHAPAR_COMMIT"
-verify_protected_checkout "$VALIDATOR_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py ci/install-validated-sqsh.py containers/images/preflight.sh
+verify_protected_checkout "$VALIDATOR_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py ci/install-validated-sqsh.py containers/images/preflight.sh containers/images/targets.json containers/images/sources-lock.json containers/images/tests/validate-locks.sh
 test "$(trusted_git "$VALIDATOR_CODE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"; test -z "$(trusted_git "$VALIDATOR_CODE_ROOT" status --porcelain --untracked-files=all)"
 HELPER="$VALIDATOR_CODE_ROOT/ci/verify-vlad-source-approval.py"
 HANDOFF_JSON="$(python3 "$HELPER" --verify-builder-handoff "$BUILDER_HANDOFF" --expected-sha256 "$BUILDER_HANDOFF_SHA256" --expected-chapar-commit "$CHAPAR_COMMIT")"
@@ -299,7 +304,7 @@ RECEIPT_ROOT="$VALIDATOR_ROOT/$TARGET/$IMAGE_ID/$IMAGE_SHA256"
 RECEIPT_ROOT_JSON="$(python3 "$HELPER" --verify-empty-evidence-directory "$RECEIPT_ROOT" --owner-role validator)"
 RECEIPT_ROOT_IDENTITY="$(python3 "$HELPER" --extract-canonical-field --schema directory-identity --field directory_identity <<<"$RECEIPT_ROOT_JSON")"
 CANDIDATE_ROOT="$VALIDATOR_IMAGE_ROOT"
-python3 "$HELPER" --run-and-capture --output "$RECEIPT_ROOT/runtime-preflight.json" -- bash "$VALIDATOR_CODE_ROOT/containers/images/preflight.sh" --mode runtime --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --sha256 "$IMAGE_SHA256" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATOR_ROOT" --image-root /home/hpcadmin/shared/enroot-cache/chapar-vlad --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256"
+python3 "$HELPER" --run-and-capture --output "$RECEIPT_ROOT/runtime-preflight.json" -- /bin/bash "$VALIDATOR_CODE_ROOT/containers/images/preflight.sh" --mode runtime --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --sha256 "$IMAGE_SHA256" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATOR_ROOT" --image-root /home/hpcadmin/shared/enroot-cache/chapar-vlad --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256" --tool-root "$TOOL_ROOT"
 python3 "$HELPER" --run-and-capture --output "$RECEIPT_ROOT/pyxis-smoke.txt" --capture-stderr -- srun --partition="$PARTITION" --nodes=1 --ntasks=1 --time=00:05:00 --container-image="$IMAGE_PATH" /bin/true
 RUNTIME_RECEIPT="$RECEIPT_ROOT/receipt.json"
 python3 "$HELPER" --write-runtime-receipt "$RUNTIME_RECEIPT" --builder-handoff "$BUILDER_HANDOFF" --builder-handoff-sha256 "$BUILDER_HANDOFF_SHA256" --validator-root "$VALIDATOR_ROOT" --validator-image-root "$VALIDATOR_IMAGE_ROOT" --preflight "$RECEIPT_ROOT/runtime-preflight.json" --smoke-output "$RECEIPT_ROOT/pyxis-smoke.txt" --image "$IMAGE_PATH" --sha256 "$IMAGE_SHA256" --target "$TARGET" --release-binding "$RELEASE_BINDING"
@@ -327,7 +332,7 @@ preflight failure, evidence drift, existing final path, or durability uncertaint
 ```bash
 set -euo pipefail
 verify_protected_checkout() {
-  python3 - "$@" <<'PY'
+  /usr/bin/python3 - "$@" <<'PY'
 import ctypes, errno, os, stat, subprocess, sys
 root, commit, *relative_paths = sys.argv[1:]
 def require(ok, message):
@@ -378,9 +383,10 @@ PY
 }
 trusted_git() { local root="$1"; shift; env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 /usr/bin/git --no-pager --no-replace-objects -C "$root" -c "safe.directory=$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
 : "${PUBLISHER_CODE_ROOT:?}" "${CHAPAR_COMMIT:?}" "${BUILDER_HANDOFF:?}" "${BUILDER_HANDOFF_SHA256:?}" "${RUNTIME_RECEIPT:?}" "${RUNTIME_RECEIPT_SHA256:?}" "${SITE_CONTRACT_SHA256:?}"
+export PATH=/usr/bin:/bin
 SITE_CONTRACT=/etc/chapar/vlad-image/site-contract.json
 test "$PUBLISHER_CODE_ROOT" = "/vast/chapar-publisher-code/$CHAPAR_COMMIT"
-verify_protected_checkout "$PUBLISHER_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py ci/install-validated-sqsh.py containers/images/preflight.sh
+verify_protected_checkout "$PUBLISHER_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py ci/install-validated-sqsh.py containers/images/preflight.sh containers/images/targets.json containers/images/sources-lock.json containers/images/tests/validate-locks.sh
 test "$(trusted_git "$PUBLISHER_CODE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"; test -z "$(trusted_git "$PUBLISHER_CODE_ROOT" status --porcelain --untracked-files=all)"
 HELPER="$PUBLISHER_CODE_ROOT/ci/verify-vlad-source-approval.py"
 HANDOFF_JSON="$(python3 "$HELPER" --verify-builder-handoff "$BUILDER_HANDOFF" --expected-sha256 "$BUILDER_HANDOFF_SHA256" --expected-chapar-commit "$CHAPAR_COMMIT")"
@@ -398,7 +404,7 @@ PUBLISHER_EVIDENCE_ROOT=/home/hpcadmin/shared/enroot-cache/chapar-vlad-evidence
 PUBLISHER_RUN_ROOT="$PUBLISHER_EVIDENCE_ROOT/$TARGET/$IMAGE_ID/$IMAGE_SHA256"
 PUBLISHER_RUN_JSON="$(python3 "$HELPER" --verify-empty-evidence-directory "$PUBLISHER_RUN_ROOT" --owner-role publisher)"
 PUBLISHER_RUN_IDENTITY="$(python3 "$HELPER" --extract-canonical-field --schema directory-identity --field directory_identity <<<"$PUBLISHER_RUN_JSON")"
-python3 "$HELPER" --run-and-capture --output "$PUBLISHER_RUN_ROOT/publisher-preflight.json" -- bash "$PUBLISHER_CODE_ROOT/containers/images/preflight.sh" --mode publisher --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --sha256 "$IMAGE_SHA256" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATOR_ROOT" --image-root "$IMAGE_ROOT" --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256"
+python3 "$HELPER" --run-and-capture --output "$PUBLISHER_RUN_ROOT/publisher-preflight.json" -- /bin/bash "$PUBLISHER_CODE_ROOT/containers/images/preflight.sh" --mode publisher --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --sha256 "$IMAGE_SHA256" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATOR_ROOT" --image-root "$IMAGE_ROOT" --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256"
 PUBLISHER_PREFLIGHT_SHA256="$(sha256sum "$PUBLISHER_RUN_ROOT/publisher-preflight.json" | awk '{print $1}')"
 python3 "$HELPER" --seal-evidence-directory "$PUBLISHER_RUN_ROOT" --expected-directory-identity "$PUBLISHER_RUN_IDENTITY" --file-mode 0444 --directory-mode 0555
 FINAL_PATH="$FINAL_RELEASES_ROOT/$(basename "$IMAGE_PATH")"
