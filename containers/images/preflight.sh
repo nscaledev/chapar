@@ -393,6 +393,7 @@ def open_pinned_tool(path: str, identity: str, test_mode: bool) -> tuple[str, st
         if test_mode:
             os.close(descriptor)
             return path, digest.hexdigest(), None
+        os.lseek(descriptor, 0, os.SEEK_SET)
         return f"/dev/fd/{descriptor}", digest.hexdigest(), descriptor
     except Exception:
         os.close(descriptor)

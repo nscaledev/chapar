@@ -116,7 +116,7 @@ ID_RE: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 # autoconf, ...) are intentionally dropped -- they are not needed to execute the
 # roots and they are a large fraction of the store.
 RUNTIME_DEPTYPES: Final = frozenset({"link", "run"})
-REQUIRED_BUILD_TOOLS: Final = ("enroot", "skopeo")
+REQUIRED_BUILD_TOOLS: Final = ("enroot", "mksquashfs", "unsquashfs", "zstd", "syft", "jq", "skopeo")
 TOOL_EVIDENCE_SCHEMA: Final = "chapar-vlad-builder-tools/v1"
 
 
@@ -210,9 +210,9 @@ def absolute(raw: str, label: str) -> Path:
     return Path(os.path.normpath(str(path)))
 
 
-def run(command: list[str], label: str) -> str:
+def run(command: list[str], label: str, pass_fds: tuple[int, ...] = (), environment: dict[str, str] | None = None) -> str:
     try:
-        completed = subprocess.run(command, check=True, capture_output=True, text=True)
+        completed = subprocess.run(command, check=True, capture_output=True, text=True, pass_fds=pass_fds, env=environment)
     except FileNotFoundError:
         fail(f"{label} requires an unavailable tool: {command[0]}")
     except subprocess.CalledProcessError as error:
@@ -281,29 +281,61 @@ def locked_binary_hashes(source_lock: dict[str, Any], native_arch: str) -> dict[
     return hashes
 
 
-def verify_locked_tool(path: Path, name: str, expected_digest: str, owner_uid: int = 0) -> str:
+def open_locked_tool(path: Path, name: str, expected_digest: str, owner_uid: int = 0) -> tuple[str, int]:
     try:
         info = path.lstat()
     except OSError as error:
         fail(f"locked builder tool cannot be inspected: {path}: {error}")
     if not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid or stat.S_IMODE(info.st_mode) & 0o022 or stat.S_IMODE(info.st_mode) & 0o111 == 0:
         fail(f"locked builder tool has unsafe owner, mode, or type: {path}")
-    if stable_sha256(path, f"locked builder tool {name}", owner_uid) != expected_digest:
-        fail(f"locked builder tool digest mismatch: {name}")
-    return str(path)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid or stat.S_IMODE(before.st_mode) & 0o022 or stat.S_IMODE(before.st_mode) & 0o111 == 0:
+            fail(f"locked builder tool changed owner, mode, or type while opening: {path}")
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        if identity(before) != identity(after):
+            fail(f"locked builder tool changed while open: {name}")
+        if digest.hexdigest() != expected_digest:
+            fail(f"locked builder tool digest mismatch: {name}")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return f"/dev/fd/{descriptor}", descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
 
 
-def locked_tool_paths(source_lock: dict[str, Any], native_arch: str, tool_root: Path) -> tuple[dict[str, str], dict[str, str]]:
+def locked_tool_paths(source_lock: dict[str, Any], native_arch: str, tool_root: Path) -> tuple[dict[str, str], dict[str, str], tuple[int, ...]]:
     try:
         protected_directory(tool_root)
     except OSError as error:
         fail(f"tool root cannot be opened securely: {error}")
     expected = locked_binary_hashes(source_lock, native_arch)
     paths: dict[str, str] = {}
-    for name, digest in expected.items():
-        path = tool_root / name
-        paths[name] = verify_locked_tool(path, name, digest)
-    return paths, expected
+    descriptors: list[int] = []
+    try:
+        for name, digest in expected.items():
+            path = tool_root / name
+            command, descriptor = open_locked_tool(path, name, digest)
+            paths[name] = command
+            descriptors.append(descriptor)
+    except Exception:
+        for descriptor in descriptors:
+            os.close(descriptor)
+        raise
+    return paths, expected, tuple(descriptors)
+
+
+def descriptor_tool_environment(tools: dict[str, str], directory: Path) -> dict[str, str]:
+    for name, command in tools.items():
+        os.symlink(command, directory / name)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{directory}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    return environment
 
 
 def write_tool_evidence(path: Path, target: str, native_arch: str, hashes: dict[str, str]) -> None:
@@ -334,15 +366,26 @@ def tool_supply_self_test() -> None:
     protected_directory(root)
     binary = root / "true"
     digest = stable_sha256(binary, "tool self-test binary", 0)
-    verify_locked_tool(binary, "true", digest)
+    command, descriptor = open_locked_tool(binary, "true", digest)
     try:
-        verify_locked_tool(binary, "true", "0" * 64)
+        with tempfile.TemporaryDirectory(prefix="chapar-tool-self-test.") as raw:
+            environment = descriptor_tool_environment({"true": command}, Path(raw))
+            if Path(raw, "true").readlink() != Path(command) or environment["PATH"].split(":", 1)[0] != raw:
+                fail("tool self-test did not bind the controlled PATH to the descriptor")
+            if sys.platform.startswith("linux"):
+                subprocess.run(["true"], check=True, pass_fds=(descriptor,), env=environment)
+            elif command != f"/dev/fd/{descriptor}" or not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                fail("tool self-test did not retain a descriptor-bound command")
+    finally:
+        os.close(descriptor)
+    try:
+        open_locked_tool(binary, "true", "0" * 64)
     except BuildError as error:
         if "digest mismatch" not in str(error):
             raise
     else:
         fail("tool self-test accepted a digest mismatch")
-    print("PASS: locked builder tools use protected absolute paths and descriptor-bound SHA-256")
+    print("PASS: locked builder tools execute from descriptor-bound bytes under a protected tool root")
 
 
 def prepare_owned_directory(path: Path, label: str) -> None:
@@ -391,7 +434,7 @@ def resolve_base_descriptor(base: dict[str, str], target: str, lock: dict[str, A
     return descriptor
 
 
-def import_base(base: dict[str, str], descriptor: str, import_dir: Path, tools: dict[str, str]) -> Path:
+def import_base(base: dict[str, str], descriptor: str, import_dir: Path, tools: dict[str, str], tool_descriptors: tuple[int, ...], tool_environment: dict[str, str]) -> Path:
     """Import the digest-pinned base into a one-use local SQSH.
 
     skopeo copies by digest into an OCI archive first, then enroot imports that
@@ -405,9 +448,9 @@ def import_base(base: dict[str, str], descriptor: str, import_dir: Path, tools: 
     enroot = tools["enroot"]
     archive = import_dir / "base-oci.tar"
     print(f"==> copying {base['image']}@{descriptor}")
-    run([skopeo, "copy", f"docker://{base['image']}@{descriptor}", f"oci-archive:{archive}"], "skopeo copy")
+    run([skopeo, "copy", f"docker://{base['image']}@{descriptor}", f"oci-archive:{archive}"], "skopeo copy", tool_descriptors, tool_environment)
     print("==> importing base into enroot")
-    run([enroot, "import", "-o", str(out), f"oci-archive://{archive}"], "enroot import")
+    run([enroot, "import", "-o", str(out), f"oci-archive://{archive}"], "enroot import", tool_descriptors, tool_environment)
     archive.unlink(missing_ok=True)
     imported = out.lstat()
     if not stat.S_ISREG(imported.st_mode) or imported.st_uid != os.geteuid() or imported.st_nlink != 1:
@@ -677,7 +720,7 @@ def inject(data_path: Path, container: str, prefixes: list[Path], release_dir: P
     profile.chmod(0o644)
 
 
-def verify(enroot: str, container: str, arch: str, spack_target: str, base_id: str) -> None:
+def verify(enroot: str, container: str, arch: str, spack_target: str, base_id: str, tool_descriptors: tuple[int, ...], tool_environment: dict[str, str]) -> None:
     print("==> verifying injected tree inside the rootfs")
     if not arch.endswith(spack_target):
         fail(
@@ -721,6 +764,8 @@ def verify(enroot: str, container: str, arch: str, spack_target: str, base_id: s
         [enroot, "start", "--root", "--rw", "--env", "PS1=", "--env", "NVIDIA_VISIBLE_DEVICES=void",
          container, "bash", "-c", script],
         "in-image verification",
+        tool_descriptors,
+        tool_environment,
     )
     print("    " + output.strip().splitlines()[-1])
 
@@ -823,57 +868,63 @@ def main() -> int:
         pass
     else:
         fail(f"tool evidence already exists: {tool_evidence}")
-    tools, tool_hashes = locked_tool_paths(source_lock, target_spec["native_arch"], tool_root)
-    write_tool_evidence(tool_evidence, args.target, target_spec["native_arch"], tool_hashes)
-    enroot = tools["enroot"]
-    build_root = absolute(args.enroot_build_root, "enroot build root") if args.enroot_build_root else work / ".enroot-build"
-    prepare_owned_directory(build_root, "enroot build root")
-    for name in ("data", "cache", "temp", "runtime"):
-        prepare_owned_directory(build_root / name, f"enroot {name} directory")
-    os.environ["ENROOT_DATA_PATH"] = str(build_root / "data")
-    os.environ["ENROOT_CACHE_PATH"] = str(build_root / "cache")
-    os.environ["ENROOT_TEMP_PATH"] = str(build_root / "temp")
-    os.environ["ENROOT_RUNTIME_PATH"] = str(build_root / "runtime")
-
-    container = f"chaparbuild-{args.base}-{args.target}-{os.getpid()}"
-    subprocess.run([enroot, "remove", "-f", container], capture_output=True, check=False)
-    with tempfile.TemporaryDirectory(prefix="base-import.", dir=build_root / "temp") as import_raw:
-        base_sqsh = import_base(base, descriptor, Path(import_raw), tools)
-        run([enroot, "create", "--name", container, str(base_sqsh)], "enroot create")
+    tools, tool_hashes, tool_descriptors = locked_tool_paths(source_lock, target_spec["native_arch"], tool_root)
     try:
-        inject(build_root / "data", container, prefixes, release_dir, arch, base)
-        verify(enroot, container, arch, target_spec["spack_target"], args.base)
-        partial = out.with_suffix(f".sqsh.partial.{os.getpid()}")
-        checksum_partial: Path | None = None
-        partial.unlink(missing_ok=True)
-        try:
-            print(f"==> exporting {out}")
-            run([enroot, "export", "-o", str(partial), container], "enroot export")
-            exported = partial.lstat()
-            if not stat.S_ISREG(exported.st_mode) or exported.st_uid != os.geteuid() or exported.st_nlink != 1:
-                fail("enroot produced an untrusted candidate artifact")
-            partial.chmod(0o444)
-            digest = stable_sha256(partial, "candidate artifact", os.geteuid())
-            checksum_fd, checksum_raw = tempfile.mkstemp(prefix=f".{artifact_name}.sha256.partial.", dir=work)
-            checksum_partial = Path(checksum_raw)
-            with os.fdopen(checksum_fd, "w", encoding="utf-8") as stream:
-                stream.write("PENDING\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            publish_pair_no_clobber(
-                partial,
-                out,
-                checksum_partial,
-                checksum,
-                f"{digest}  {artifact_name}\n",
-            )
-        finally:
-            partial.unlink(missing_ok=True)
-            if checksum_partial is not None:
-                checksum_partial.unlink(missing_ok=True)
+        write_tool_evidence(tool_evidence, args.target, target_spec["native_arch"], tool_hashes)
+        enroot = tools["enroot"]
+        build_root = absolute(args.enroot_build_root, "enroot build root") if args.enroot_build_root else work / ".enroot-build"
+        prepare_owned_directory(build_root, "enroot build root")
+        for name in ("data", "cache", "temp", "runtime"):
+            prepare_owned_directory(build_root / name, f"enroot {name} directory")
+        os.environ["ENROOT_DATA_PATH"] = str(build_root / "data")
+        os.environ["ENROOT_CACHE_PATH"] = str(build_root / "cache")
+        os.environ["ENROOT_TEMP_PATH"] = str(build_root / "temp")
+        os.environ["ENROOT_RUNTIME_PATH"] = str(build_root / "runtime")
+
+        container = f"chaparbuild-{args.base}-{args.target}-{os.getpid()}"
+        with tempfile.TemporaryDirectory(prefix="verified-tools.", dir=build_root / "temp") as tool_raw:
+            tool_environment = descriptor_tool_environment(tools, Path(tool_raw))
+            subprocess.run([enroot, "remove", "-f", container], capture_output=True, check=False, pass_fds=tool_descriptors, env=tool_environment)
+            with tempfile.TemporaryDirectory(prefix="base-import.", dir=build_root / "temp") as import_raw:
+                base_sqsh = import_base(base, descriptor, Path(import_raw), tools, tool_descriptors, tool_environment)
+                run([enroot, "create", "--name", container, str(base_sqsh)], "enroot create", tool_descriptors, tool_environment)
+            try:
+                inject(build_root / "data", container, prefixes, release_dir, arch, base)
+                verify(enroot, container, arch, target_spec["spack_target"], args.base, tool_descriptors, tool_environment)
+                partial = out.with_suffix(f".sqsh.partial.{os.getpid()}")
+                checksum_partial: Path | None = None
+                partial.unlink(missing_ok=True)
+                try:
+                    print(f"==> exporting {out}")
+                    run([enroot, "export", "-o", str(partial), container], "enroot export", tool_descriptors, tool_environment)
+                    exported = partial.lstat()
+                    if not stat.S_ISREG(exported.st_mode) or exported.st_uid != os.geteuid() or exported.st_nlink != 1:
+                        fail("enroot produced an untrusted candidate artifact")
+                    partial.chmod(0o444)
+                    digest = stable_sha256(partial, "candidate artifact", os.geteuid())
+                    checksum_fd, checksum_raw = tempfile.mkstemp(prefix=f".{artifact_name}.sha256.partial.", dir=work)
+                    checksum_partial = Path(checksum_raw)
+                    with os.fdopen(checksum_fd, "w", encoding="utf-8") as stream:
+                        stream.write("PENDING\n")
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    publish_pair_no_clobber(
+                        partial,
+                        out,
+                        checksum_partial,
+                        checksum,
+                        f"{digest}  {artifact_name}\n",
+                    )
+                finally:
+                    partial.unlink(missing_ok=True)
+                    if checksum_partial is not None:
+                        checksum_partial.unlink(missing_ok=True)
+            finally:
+                if not args.keep_container:
+                    subprocess.run([enroot, "remove", "-f", container], capture_output=True, check=False, pass_fds=tool_descriptors, env=tool_environment)
     finally:
-        if not args.keep_container:
-            subprocess.run([enroot, "remove", "-f", container], capture_output=True, check=False)
+        for descriptor_fd in tool_descriptors:
+            os.close(descriptor_fd)
 
     print(f"==> {artifact_name}")
     print(f"    sha256 {digest}")

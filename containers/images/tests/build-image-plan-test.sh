@@ -348,7 +348,7 @@ expect_failure() {
 expect_success publication-pair "${PLAN_SCRIPT}" --self-test-publication
 grep -Fqx 'PASS: candidate artifact/checksum pair publication is no-clobber and crash-safe' "${OUTPUT_ROOT}/publication-pair.out"
 expect_success locked-builder-tools "${PLAN_SCRIPT}" --self-test-tools
-grep -Fqx 'PASS: locked builder tools use protected absolute paths and descriptor-bound SHA-256' "${OUTPUT_ROOT}/locked-builder-tools.out"
+grep -Fqx 'PASS: locked builder tools execute from descriptor-bound bytes under a protected tool root' "${OUTPUT_ROOT}/locked-builder-tools.out"
 
 set +e
 SOURCES_PATH_OVERRIDE="${PIPELINE_ROOT}/sources-template.json" \

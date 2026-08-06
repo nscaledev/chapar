@@ -88,6 +88,7 @@ for relative_path in relative_paths:
   require(actual == expected, f"blob mismatch: {relative_path}")
 PY
 }
+trusted_git() { local root="$1"; shift; env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 /usr/bin/git --no-pager --no-replace-objects -C "$root" -c "safe.directory=$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
 : "${CHAPAR_COMMIT:?}" "${SOURCE_APPROVAL_RECEIPT:?}" "${SOURCE_APPROVAL_SHA256:?}" "${EXPECTED_APPROVED_BY:?}" "${EXPECTED_CHANGE_TICKET:?}" "${TARGET:?}" "${RELEASE_ID:?}" "${IMAGE_ID:?}" "${PARTITION:?}" "${SITE_CONTRACT_SHA256:?}"
 export PATH=/usr/bin:/bin
 [[ "$CHAPAR_COMMIT" =~ ^[0-9a-f]{40}$ ]]
@@ -112,7 +113,8 @@ test "$(findmnt -n -o TARGET -T "$FINAL_ROOT")" = /home; [[ "$(findmnt -n -o FST
 df -hT /home/hpcadmin /vast; for protected in "$FINAL_ROOT" "$TOOL_ROOT" "$VALIDATOR_ROOT" "$BUILDER_CODE_ROOT" "$VALIDATOR_CODE_ROOT" "$VALIDATOR_IMAGE_ROOT" "$PUBLISHER_CODE_ROOT" "$PUBLISHER_EVIDENCE_ROOT"; do test -d "$protected"; test ! -w "$protected"; done
 test -x /usr/bin/git; test -x /bin/bash; test -x /usr/bin/python3
 test "$BUILDER_CODE_ROOT" = "/vast/chapar-builder-code/$CHAPAR_COMMIT"
-verify_protected_checkout "$BUILDER_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py etc/install-spack.sh etc/init.sh envs/vlad/release.sh envs/vlad/tests/target-policy-test.py envs/vlad/tests/target_policy_yaml.py validation/run validation/tests/integrity-test.sbatch containers/images/preflight.sh containers/images/build-image.sh containers/images/targets.json containers/images/sources-lock.json containers/images/tests/validate-locks.sh
+verify_protected_checkout "$BUILDER_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py etc/install-spack.sh etc/init.sh etc/system/include.yaml etc/system/base/concretizer.yaml etc/system/base/config.yaml etc/system/base/mirrors.yaml etc/system/base/packages.yaml etc/system/base/repos.yaml etc/system/linux/packages.yaml etc/system/ubuntu24.04/mirrors.yaml etc/system/ubuntu24.04/packages.yaml etc/user/include.yaml etc/user/base/config.yaml etc/user/base/modules.yaml etc/user/ubuntu24.04/config.yaml envs/vlad/release.sh envs/vlad/tests/target-policy-test.py envs/vlad/tests/target_policy_yaml.py validation/run validation/tests/integrity-test.sbatch containers/images/preflight.sh containers/images/build-image.sh containers/images/targets.json containers/images/sources-lock.json containers/images/tests/validate-locks.sh
+test "$(trusted_git "$BUILDER_CODE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"; test -z "$(trusted_git "$BUILDER_CODE_ROOT" status --porcelain --untracked-files=all)"
 BUILDER_HELPER="$BUILDER_CODE_ROOT/ci/verify-vlad-source-approval.py"
 install -d -m 0755 /home/hpcadmin/chapar-sources
 test ! -e "$SOURCE_CLONE_ROOT"

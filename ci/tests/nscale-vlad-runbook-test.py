@@ -66,6 +66,8 @@ REQUIRED_BLOCK_ANCHORS: Final = (
     'ENV_PATH="$BUILD_ROOT/envs/vlad" /bin/bash "$BUILDER_CODE_ROOT/envs/vlad/release.sh" build "$RELEASE_ID"',
     'SOURCE_CLONE_ROOT=/home/hpcadmin/chapar-sources/$CHAPAR_COMMIT-$TARGET',
     'test "$BUILDER_CODE_ROOT" = "/vast/chapar-builder-code/$CHAPAR_COMMIT"',
+    'test "$(trusted_git "$BUILDER_CODE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"',
+    'etc/system/base/repos.yaml',
     '/usr/bin/python3 "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT"',
     '--tool-root "$TOOL_ROOT" --tool-evidence "$BUILDER_TOOL_EVIDENCE"',
     '--builder-tools "$BUILDER_TOOL_EVIDENCE"',

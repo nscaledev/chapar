@@ -39,6 +39,7 @@ BUILDER_SCHEMA: Final = "chapar-vlad-builder-handoff/v1"
 BUILDER_TOOLS_SCHEMA: Final = "chapar-vlad-builder-tools/v1"
 RUNTIME_SCHEMA: Final = "chapar-vlad-runtime-receipt/v1"
 TARGET_NATIVE_ARCH: Final = {"linux-x86_64-v4": "x86_64", "linux-aarch64-gb300": "aarch64"}
+BUILDER_TOOL_NAMES: Final = ("enroot", "mksquashfs", "unsquashfs", "zstd", "syft", "jq", "skopeo")
 SCHEMA_KEYS: Final = {
     SOURCE_SCHEMA: frozenset({"schema", "approved_by", "approved_at", "change_ticket", "chapar_remote", "chapar_commit", "source_lock_path", "source_lock_sha256"}),
     RELEASE_SCHEMA: frozenset({"schema", "release_dir", "release_id", "chapar_commit", "source_lock_sha256", "target", "metadata_path", "metadata_sha256", "spack_lock_path", "spack_lock_sha256", "status"}),
@@ -442,12 +443,12 @@ def locked_builder_tools(build_root: str, source_lock_sha: str, target: str) -> 
         for binary in binaries if isinstance(binaries, list) else []:
             require(type(binary) is dict, "source lock builder tool binary must be an object")
             name = binary.get("name") if isinstance(binary, dict) else None
-            if name in {"enroot", "skopeo"}:
+            if name in BUILDER_TOOL_NAMES:
                 require(name not in expected, f"source lock builder tool is duplicated: {name}")
                 digest = binary.get("sha256") if isinstance(binary, dict) else None
                 require(type(digest) is str, f"source lock builder tool digest must be a string: {name}")
                 expected[name] = require_sha(digest, f"source lock builder tool digest: {name}")
-    require(set(expected) == {"enroot", "skopeo"}, "source lock does not bind both builder tools")
+    require(set(expected) == set(BUILDER_TOOL_NAMES), "source lock does not bind every builder tool")
     return expected
 
 
@@ -456,9 +457,9 @@ def validate_builder_tools(data: JsonMap, target: str, expected: dict[str, str])
     require(expect_string(data, "target") == target, "builder tool evidence target mismatch")
     require(expect_string(data, "native_arch") == TARGET_NATIVE_ARCH[target], "builder tool evidence architecture mismatch")
     tools = data.get("tools")
-    require(type(tools) is dict and set(tools) == {"enroot", "skopeo"}, "builder tool evidence identities mismatch")
+    require(type(tools) is dict and set(tools) == set(BUILDER_TOOL_NAMES), "builder tool evidence identities mismatch")
     actual: dict[str, str] = {}
-    for name in ("enroot", "skopeo"):
+    for name in BUILDER_TOOL_NAMES:
         value = tools.get(name) if isinstance(tools, dict) else None
         require(type(value) is str, f"builder tool evidence {name} digest must be a string")
         actual[name] = require_sha(value, f"builder tool evidence {name} digest")
@@ -855,10 +856,12 @@ def self_test() -> None:
         spack_lock.write_text('{"lock":"fixture"}\n', encoding="utf-8")
         source_lock = build_root / "containers/images/sources-lock.json"
         source_lock.parent.mkdir(parents=True)
+        fixture_tool_hashes = {name: f"{index:064x}" for index, name in enumerate(BUILDER_TOOL_NAMES, start=101)}
         source_lock.write_text(json.dumps({
             "verified": {"builder_tools": [
-                {"assets": {"x86_64": {"binaries": [{"name": "enroot", "sha256": "c" * 64}]}}},
-                {"assets": {"x86_64": {"binaries": [{"name": "skopeo", "sha256": "d" * 64}]}}},
+                {"assets": {"x86_64": {"binaries": [
+                    {"name": name, "sha256": digest} for name, digest in fixture_tool_hashes.items()
+                ]}}},
             ]},
         }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         source_lock_sha = hashlib.sha256(source_lock.read_bytes()).hexdigest()
@@ -890,7 +893,11 @@ def self_test() -> None:
         image.write_bytes(image_bytes)
         image.chmod(0o444)
         builder_tools_path = validation_root / "builder-tools.json"
-        builder_tools_path.write_text('{"native_arch":"x86_64","schema":"chapar-vlad-builder-tools/v1","target":"linux-x86_64-v4","tools":{"enroot":"' + "c" * 64 + '","skopeo":"' + "d" * 64 + '"}}\n', encoding="utf-8")
+        builder_tools_payload = json.dumps({
+            "native_arch": "x86_64", "schema": BUILDER_TOOLS_SCHEMA,
+            "target": "linux-x86_64-v4", "tools": fixture_tool_hashes,
+        }, sort_keys=True, separators=(",", ":")) + "\n"
+        builder_tools_path.write_text(builder_tools_payload, encoding="utf-8")
         builder_tools_path.chmod(0o444)
         builder_path = validation_root / "builder-handoff.json"
         builder_json: JsonMap = {
@@ -910,13 +917,14 @@ def self_test() -> None:
         cases.append(expect_child_failure("builder-image-hash-drift", lambda: validate_builder(mutated(builder_json, "image_sha256", "0" * 64)), "builder image digest mismatch"))
         cases.append(expect_child_failure("builder-tools-hash-drift", lambda: validate_builder(mutated(builder_json, "builder_tools_sha256", "0" * 64)), "builder tool evidence digest mismatch"))
         builder_tools_path.chmod(0o644)
-        unbound_builder_tools = builder_tools_path.read_text(encoding="utf-8").replace('"enroot":"' + "c" * 64, '"enroot":"' + "e" * 64)
-        builder_tools_path.write_text(unbound_builder_tools, encoding="utf-8")
+        unbound_document = json.loads(builder_tools_payload)
+        unbound_document["tools"]["enroot"] = "e" * 64
+        builder_tools_path.write_text(json.dumps(unbound_document, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         builder_tools_path.chmod(0o444)
         unbound_builder = mutated(builder_json, "builder_tools_sha256", hashlib.sha256(builder_tools_path.read_bytes()).hexdigest())
         cases.append(expect_child_failure("builder-tools-not-source-bound", lambda: validate_builder(unbound_builder), "builder tool evidence differs from source lock"))
         builder_tools_path.chmod(0o644)
-        builder_tools_path.write_text('{"native_arch":"x86_64","schema":"chapar-vlad-builder-tools/v1","target":"linux-x86_64-v4","tools":{"enroot":"' + "c" * 64 + '","skopeo":"' + "d" * 64 + '"}}\n', encoding="utf-8")
+        builder_tools_path.write_text(builder_tools_payload, encoding="utf-8")
         builder_tools_path.chmod(0o444)
         cases.append(expect_child_failure("builder-receipt-unknown-key", lambda: validate_builder({**builder_json, "unknown": "rejected"}), "key set mismatch"))
 
