@@ -1,5 +1,8 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+
+unset BASH_ENV ENV LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PYTHONHOME PYTHONPATH
+export PATH=/usr/bin:/bin
 
 usage() {
     cat <<'USAGE'
@@ -42,7 +45,8 @@ lock's floating_input_rule forbids tags as locked values. This script therefore
 refuses to run until that lock reaches status "complete", which requires
 resolving every locked category's index and per-platform descriptors on a
 builder with skopeo (and registry credentials/reachability where the base
-requires them).
+requires them). Set REGISTRY_AUTH_FILE explicitly for authenticated registries;
+the protected subprocess environment does not read credentials from caller HOME.
 
 --plan-only prints the resolved base digest, injection prefix list, and output
 path, then exits without importing, mutating, or writing anything. It is the
@@ -58,7 +62,7 @@ case "${1:-}" in
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-exec python3 - "${SCRIPT_DIR}" "$@" <<'PY'
+exec /usr/bin/python3 -I -E - "${SCRIPT_DIR}" "$@" <<'PY'
 from __future__ import annotations
 
 import argparse
@@ -72,6 +76,22 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Final
+
+FORBIDDEN_STARTUP_ENV: Final = frozenset(
+    {
+        "BASH_ENV",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "ENV",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "PYTHONHOME",
+        "PYTHONPATH",
+    }
+)
+if FORBIDDEN_STARTUP_ENV & os.environ.keys():
+    raise SystemExit("protected builder startup environment was not isolated")
 
 SCRIPT_DIR = Path(sys.argv[1]).resolve()
 sys.argv = [sys.argv[0], *sys.argv[2:]]
@@ -118,6 +138,14 @@ ID_RE: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 RUNTIME_DEPTYPES: Final = frozenset({"link", "run"})
 REQUIRED_BUILD_TOOLS: Final = ("enroot", "mksquashfs", "unsquashfs", "zstd", "syft", "jq", "skopeo")
 TOOL_EVIDENCE_SCHEMA: Final = "chapar-vlad-builder-tools/v1"
+SAFE_ENVIRONMENT_INPUTS: Final = (
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "REGISTRY_AUTH_FILE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+)
 
 
 class BuildError(Exception):
@@ -147,6 +175,23 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     raise AssertionError("unreachable")
 
 
+def child_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+    environment = {
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "TMPDIR": "/tmp",
+    }
+    for name in SAFE_ENVIRONMENT_INPUTS:
+        value = os.environ.get(name)
+        if value:
+            environment[name] = value
+    if extra:
+        environment.update(extra)
+    return environment
+
+
 def load_validated_source_lock() -> dict[str, Any]:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -157,11 +202,12 @@ def load_validated_source_lock() -> dict[str, Any]:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             fail(f"source lock is not a regular file: {SOURCES_PATH}")
-        validator_environment = os.environ.copy()
-        validator_environment["SOURCES_PATH_OVERRIDE"] = f"/dev/fd/{descriptor}"
+        validator_environment = child_environment(
+            {"PATH": "/usr/bin:/bin", "SOURCES_PATH_OVERRIDE": f"/dev/fd/{descriptor}"}
+        )
         try:
             subprocess.run(
-                [str(LOCK_VALIDATOR), "--require-complete"],
+                ["/bin/bash", str(LOCK_VALIDATOR), "--require-complete"],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -212,7 +258,14 @@ def absolute(raw: str, label: str) -> Path:
 
 def run(command: list[str], label: str, pass_fds: tuple[int, ...] = (), environment: dict[str, str] | None = None) -> str:
     try:
-        completed = subprocess.run(command, check=True, capture_output=True, text=True, pass_fds=pass_fds, env=environment)
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            pass_fds=pass_fds,
+            env=environment if environment is not None else child_environment(),
+        )
     except FileNotFoundError:
         fail(f"{label} requires an unavailable tool: {command[0]}")
     except subprocess.CalledProcessError as error:
@@ -330,10 +383,12 @@ def locked_tool_paths(source_lock: dict[str, Any], native_arch: str, tool_root: 
     return paths, expected, tuple(descriptors)
 
 
-def descriptor_tool_environment(tools: dict[str, str], directory: Path) -> dict[str, str]:
+def descriptor_tool_environment(
+    tools: dict[str, str], directory: Path, extra: dict[str, str] | None = None
+) -> dict[str, str]:
     for name, command in tools.items():
         os.symlink(command, directory / name)
-    environment = os.environ.copy()
+    environment = child_environment(extra)
     environment["PATH"] = f"{directory}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     return environment
 
@@ -369,9 +424,33 @@ def tool_supply_self_test() -> None:
     command, descriptor = open_locked_tool(binary, "true", digest)
     try:
         with tempfile.TemporaryDirectory(prefix="chapar-tool-self-test.") as raw:
-            environment = descriptor_tool_environment({"true": command}, Path(raw))
+            poisoned = {
+                "BASH_ENV": "/attacker/bash-env",
+                "DYLD_INSERT_LIBRARIES": "/attacker/dyld-insert.dylib",
+                "DYLD_LIBRARY_PATH": "/attacker/dyld-library",
+                "ENROOT_CONFIG_PATH": "/attacker/enroot-config",
+                "LD_AUDIT": "/attacker/audit.so",
+                "LD_LIBRARY_PATH": "/attacker/library",
+                "LD_PRELOAD": "/attacker/preload.so",
+                "PYTHONHOME": "/attacker/python-home",
+                "PYTHONPATH": "/attacker/python-path",
+            }
+            previous = {name: os.environ.get(name) for name in poisoned}
+            os.environ.update(poisoned)
+            try:
+                environment = descriptor_tool_environment(
+                    {"true": command}, Path(raw), {"ENROOT_DATA_PATH": "/trusted/enroot-data"}
+                )
+            finally:
+                for name, value in previous.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
             if Path(raw, "true").readlink() != Path(command) or environment["PATH"].split(":", 1)[0] != raw:
                 fail("tool self-test did not bind the controlled PATH to the descriptor")
+            if poisoned.keys() & environment.keys() or environment.get("ENROOT_DATA_PATH") != "/trusted/enroot-data":
+                fail("tool self-test did not isolate the controlled subprocess environment")
             if sys.platform.startswith("linux"):
                 subprocess.run(["true"], check=True, pass_fds=(descriptor,), env=environment)
             elif command != f"/dev/fd/{descriptor}" or not stat.S_ISREG(os.fstat(descriptor).st_mode):
@@ -692,7 +771,7 @@ def inject(data_path: Path, container: str, prefixes: list[Path], release_dir: P
             continue
         # -a preserves mode, symlinks, and times. Modes matter: a plain copy
         # under a restrictive umask breaks non-owner execution under Pyxis.
-        run(["cp", "-a", str(prefix), str(destination)], f"injecting {prefix.name}")
+        run(["/bin/cp", "-a", str(prefix), str(destination)], f"injecting {prefix.name}")
 
     modules_source = release_dir / "modulefiles" / arch
     if not modules_source.is_dir():
@@ -700,7 +779,7 @@ def inject(data_path: Path, container: str, prefixes: list[Path], release_dir: P
     modules_destination = rootfs_path(data_path, container, Path(IMAGE_MODULE_ROOT)) / arch
     modules_destination.parent.mkdir(parents=True, exist_ok=True)
     if not modules_destination.exists():
-        run(["cp", "-a", str(modules_source), str(modules_destination)], "injecting modulefiles")
+        run(["/bin/cp", "-a", str(modules_source), str(modules_destination)], "injecting modulefiles")
 
     # Opt-in by design: `module use` only, never a PATH/LD_LIBRARY_PATH prepend.
     # Anything already on PATH/LD_LIBRARY_PATH in the base image (e.g. the
@@ -876,14 +955,16 @@ def main() -> int:
         prepare_owned_directory(build_root, "enroot build root")
         for name in ("data", "cache", "temp", "runtime"):
             prepare_owned_directory(build_root / name, f"enroot {name} directory")
-        os.environ["ENROOT_DATA_PATH"] = str(build_root / "data")
-        os.environ["ENROOT_CACHE_PATH"] = str(build_root / "cache")
-        os.environ["ENROOT_TEMP_PATH"] = str(build_root / "temp")
-        os.environ["ENROOT_RUNTIME_PATH"] = str(build_root / "runtime")
+        enroot_environment = {
+            "ENROOT_DATA_PATH": str(build_root / "data"),
+            "ENROOT_CACHE_PATH": str(build_root / "cache"),
+            "ENROOT_TEMP_PATH": str(build_root / "temp"),
+            "ENROOT_RUNTIME_PATH": str(build_root / "runtime"),
+        }
 
         container = f"chaparbuild-{args.base}-{args.target}-{os.getpid()}"
         with tempfile.TemporaryDirectory(prefix="verified-tools.", dir=build_root / "temp") as tool_raw:
-            tool_environment = descriptor_tool_environment(tools, Path(tool_raw))
+            tool_environment = descriptor_tool_environment(tools, Path(tool_raw), enroot_environment)
             subprocess.run([enroot, "remove", "-f", container], capture_output=True, check=False, pass_fds=tool_descriptors, env=tool_environment)
             with tempfile.TemporaryDirectory(prefix="base-import.", dir=build_root / "temp") as import_raw:
                 base_sqsh = import_base(base, descriptor, Path(import_raw), tools, tool_descriptors, tool_environment)

@@ -27,8 +27,10 @@ CANDIDATE_ROOT="${FIXTURE}/candidates"
 VALIDATION_ROOT="${FIXTURE}/validation"
 IMAGE_ROOT="${FIXTURE}/images"
 SIDE_EFFECT_MARKER="${FIXTURE}/privileged-side-effect"
+PYTHON_GUARD_ROOT="${FIXTURE}/python-guard"
+PYTHON_INJECTION_MARKER="${FIXTURE}/python-injection-marker"
 
-mkdir -p "${TOOLS}" \
+mkdir -p "${TOOLS}" "${PYTHON_GUARD_ROOT}" \
   "${CANDIDATE_ROOT}/${TARGET}/${IMAGE_ID}" \
   "${CANDIDATE_ROOT}/linux-aarch64-gb300/${IMAGE_ID}/${IMAGE_SHA}" \
   "${VALIDATION_ROOT}/linux-aarch64-gb300/${IMAGE_ID}/${IMAGE_SHA}" \
@@ -42,6 +44,13 @@ for tool in docker docker-buildx buildctl enroot mksquashfs unsquashfs skopeo sy
   printf '#!/usr/bin/env bash\ncase "$*" in *version*|*-version*|*--version*) printf "1.0.0\\n"; exit 0 ;; esac\nprintf "invoked" >"%s"\nexit 0\n' "${SIDE_EFFECT_MARKER}" >"${TOOLS}/${tool}"
   chmod 0755 "${TOOLS}/${tool}"
 done
+
+cat >"${PYTHON_GUARD_ROOT}/sitecustomize.py" <<'PY'
+import os
+from pathlib import Path
+
+Path(os.environ["PYTHON_INJECTION_MARKER"]).touch()
+PY
 
 python3 - "${ROOT_DIR}/containers/images/sources-lock.json" "${SOURCE_LOCK}" "${MACHINE_ID}" "${CONTRACT}" "${INVENTORY}" "${FILESYSTEMS}" "${FIXTURE}" "${TOOLS}" <<'PY'
 import hashlib
@@ -497,7 +506,13 @@ json.dump(value, open(path, "w"))
 PY
 rm -f "${SIDE_EFFECT_MARKER}"
 set +e
-env VLAD_PREFLIGHT_TEST_UNAME_M=aarch64 "${PREFLIGHT}" \
+env \
+  LD_AUDIT= \
+  DYLD_INSERT_LIBRARIES= \
+  PYTHONPATH="${PYTHON_GUARD_ROOT}" \
+  PYTHON_INJECTION_MARKER="${PYTHON_INJECTION_MARKER}" \
+  VLAD_PREFLIGHT_TEST_UNAME_M=aarch64 \
+  "${PREFLIGHT}" \
   --target linux-aarch64-gb300 \
   --image-id "${IMAGE_ID}" \
   --sha256 "${IMAGE_SHA}" \
@@ -509,11 +524,13 @@ env VLAD_PREFLIGHT_TEST_UNAME_M=aarch64 "${PREFLIGHT}" \
   --mode runtime >"${FIXTURE}/runtime-optional.out" 2>"${FIXTURE}/runtime-optional.err"
 OPTIONAL_STATUS=$?
 set -e
-if [ "${OPTIONAL_STATUS}" -ne 77 ] || [ -e "${SIDE_EFFECT_MARKER}" ]; then
+if [ "${OPTIONAL_STATUS}" -ne 77 ] || [ -e "${SIDE_EFFECT_MARKER}" ] || [ -e "${PYTHON_INJECTION_MARKER}" ]; then
   printf 'FAIL: documented absent runtime feature returned %s or caused a side effect\n' "${OPTIONAL_STATUS}" >&2
+  cat "${FIXTURE}/runtime-optional.err" >&2
   exit 1
 fi
 printf 'PASS: documented absent runtime GPU returned 77 without side effects\n'
+printf 'PASS: preflight ignored caller-controlled Python startup code\n'
 
 mv "${CONTRACT}.build" "${CONTRACT}"
 chmod 0600 "${CONTRACT}"

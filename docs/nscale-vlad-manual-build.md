@@ -39,7 +39,7 @@ missing/ambiguous release, failed integrity, or blocked/incomplete source lock.
 ```bash
 set -euo pipefail
 verify_protected_checkout() {
-  /usr/bin/python3 - "$@" <<'PY'
+  /usr/bin/python3 -I -E - "$@" <<'PY'
 import ctypes, errno, os, stat, subprocess, sys
 root, commit, *relative_paths = sys.argv[1:]
 def require(ok, message):
@@ -91,6 +91,7 @@ PY
 trusted_git() { local root="$1"; shift; env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 /usr/bin/git --no-pager --no-replace-objects -C "$root" -c "safe.directory=$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
 : "${CHAPAR_COMMIT:?}" "${SOURCE_APPROVAL_RECEIPT:?}" "${SOURCE_APPROVAL_SHA256:?}" "${EXPECTED_APPROVED_BY:?}" "${EXPECTED_CHANGE_TICKET:?}" "${TARGET:?}" "${RELEASE_ID:?}" "${IMAGE_ID:?}" "${PARTITION:?}" "${SITE_CONTRACT_SHA256:?}"
 export PATH=/usr/bin:/bin
+unset BASH_ENV ENV LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PYTHONHOME PYTHONPATH
 [[ "$CHAPAR_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 [[ "$SOURCE_APPROVAL_SHA256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$SITE_CONTRACT_SHA256" =~ ^[0-9a-f]{64}$ ]]
@@ -124,14 +125,14 @@ test ! -e "$SOURCE_CLONE_ROOT"
 test "$(/usr/bin/git -C "$SOURCE_CLONE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"
 test "$(/usr/bin/git -C "$SOURCE_CLONE_ROOT" cat-file -t "$CHAPAR_COMMIT")" = commit
 test -z "$(/usr/bin/git -C "$SOURCE_CLONE_ROOT" status --porcelain)"
-APPROVAL_JSON="$(/usr/bin/python3 "$BUILDER_HELPER" --receipt "$SOURCE_APPROVAL_RECEIPT" --expected-sha256 "$SOURCE_APPROVAL_SHA256" --expected-approved-by "$EXPECTED_APPROVED_BY" --expected-change-ticket "$EXPECTED_CHANGE_TICKET" --chapar-root "$SOURCE_CLONE_ROOT")"
+APPROVAL_JSON="$(/usr/bin/python3 -I -E "$BUILDER_HELPER" --receipt "$SOURCE_APPROVAL_RECEIPT" --expected-sha256 "$SOURCE_APPROVAL_SHA256" --expected-approved-by "$EXPECTED_APPROVED_BY" --expected-change-ticket "$EXPECTED_CHANGE_TICKET" --chapar-root "$SOURCE_CLONE_ROOT")"
 APPROVED_SOURCE_LOCK="$SOURCE_CLONE_ROOT/containers/images/sources-lock.json"
-APPROVED_LOCK_SHA256="$(/usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["source_lock_sha256"])' <<<"$APPROVAL_JSON")"
+APPROVED_LOCK_SHA256="$(/usr/bin/python3 -I -E -c 'import json,sys; print(json.load(sys.stdin)["source_lock_sha256"])' <<<"$APPROVAL_JSON")"
 test ! -e "$BUILD_ROOT"; mkdir -p "$(dirname "$BUILD_ROOT")"; /usr/bin/git -C "$SOURCE_CLONE_ROOT" worktree add --detach "$BUILD_ROOT" "$CHAPAR_COMMIT"
 cd "$BUILD_ROOT"; SOURCE_LOCK="$BUILD_ROOT/containers/images/sources-lock.json"
-verify_lock(){ local source_hash build_hash; source_hash="$(sha256sum "$APPROVED_SOURCE_LOCK" | awk '{print $1}')"; build_hash="$(sha256sum "$SOURCE_LOCK" | awk '{print $1}')"; test "$source_hash" = "$APPROVED_LOCK_SHA256"; test "$build_hash" = "$APPROVED_LOCK_SHA256"; /usr/bin/python3 "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT" --expected-chapar-commit "$CHAPAR_COMMIT" --allow-generated-spack-lock; if test -n "${GENERATED_LOCK_SHA256:-}"; then test "$(sha256sum "$BUILD_ROOT/envs/vlad/spack.lock" | awk '{print $1}')" = "$GENERATED_LOCK_SHA256"; fi; SOURCES_PATH_OVERRIDE="$SOURCE_LOCK" /bin/bash "$BUILDER_CODE_ROOT/containers/images/tests/validate-locks.sh" --require-complete; }
+verify_lock(){ local source_hash build_hash; source_hash="$(sha256sum "$APPROVED_SOURCE_LOCK" | awk '{print $1}')"; build_hash="$(sha256sum "$SOURCE_LOCK" | awk '{print $1}')"; test "$source_hash" = "$APPROVED_LOCK_SHA256"; test "$build_hash" = "$APPROVED_LOCK_SHA256"; /usr/bin/python3 -I -E "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT" --expected-chapar-commit "$CHAPAR_COMMIT" --allow-generated-spack-lock; if test -n "${GENERATED_LOCK_SHA256:-}"; then test "$(sha256sum "$BUILD_ROOT/envs/vlad/spack.lock" | awk '{print $1}')" = "$GENERATED_LOCK_SHA256"; fi; SOURCES_PATH_OVERRIDE="$SOURCE_LOCK" /bin/bash "$BUILDER_CODE_ROOT/containers/images/tests/validate-locks.sh" --require-complete; }
 verify_lock
-read -r SPACK_CORE_COMMIT SPACK_PACKAGES_COMMIT < <(/usr/bin/python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); r={x["id"]:x["commit"] for x in d["verified"]["spack_repositories"]}; print(r["spack-core"], r["spack-packages"])' "$SOURCE_LOCK")
+read -r SPACK_CORE_COMMIT SPACK_PACKAGES_COMMIT < <(/usr/bin/python3 -I -E -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); r={x["id"]:x["commit"] for x in d["verified"]["spack_repositories"]}; print(r["spack-core"], r["spack-packages"])' "$SOURCE_LOCK")
 [[ "$SPACK_CORE_COMMIT" =~ ^[0-9a-f]{40}$ && "$SPACK_PACKAGES_COMMIT" =~ ^[0-9a-f]{40}$ ]]
 CHAPAR_SPACK_ROOT="$SPACK_ROOT" SPACK_REF="$SPACK_CORE_COMMIT" /bin/bash "$BUILDER_CODE_ROOT/etc/install-spack.sh"
 test "$(git -C "$SPACK_ROOT" rev-parse HEAD)" = "$SPACK_CORE_COMMIT"
@@ -149,7 +150,7 @@ case "$TARGET" in linux-x86_64-v4) EXPECTED_NATIVE_ARCH=x86_64; EXPECTED_SPACK_F
 test "$(uname -m)" = "$EXPECTED_NATIVE_ARCH"; test "$(spack arch --family)" = "$EXPECTED_SPACK_FAMILY"
 mkdir -p "$VALIDATION_ROOT"
 spack -e envs/vlad spec --fresh --yaml zlib target="$(spack arch --family)" > "$VALIDATION_ROOT/native-spec.yaml"
-/usr/bin/python3 "$BUILDER_CODE_ROOT/envs/vlad/tests/target-policy-test.py" --assert-concrete-yaml "$VALIDATION_ROOT/native-spec.yaml" --expected-target "$EXPECTED_CONCRETE_TARGET"
+/usr/bin/python3 -E -s "$BUILDER_CODE_ROOT/envs/vlad/tests/target-policy-test.py" --assert-concrete-yaml "$VALIDATION_ROOT/native-spec.yaml" --expected-target "$EXPECTED_CONCRETE_TARGET"
 spack -e envs/vlad concretize -f
 test -f envs/vlad/spack.lock
 GENERATED_LOCK_SHA256="$(sha256sum envs/vlad/spack.lock | awk '{print $1}')"
@@ -169,8 +170,8 @@ RELEASE_DIR="$(dirname "${RELEASE_METADATA[0]}")"
 test -d "$RELEASE_DIR"
 grep -Fx "release_id: $RELEASE_ID" "$RELEASE_DIR/metadata.txt"
 MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad /bin/bash "$BUILDER_CODE_ROOT/validation/run" integrity-test
-/usr/bin/python3 "$BUILDER_HELPER" --write-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
-/usr/bin/python3 "$BUILDER_HELPER" --verify-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
+/usr/bin/python3 -I -E "$BUILDER_HELPER" --write-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
+/usr/bin/python3 -I -E "$BUILDER_HELPER" --verify-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
 ENV_PATH="$BUILD_ROOT/envs/vlad" /bin/bash "$BUILDER_CODE_ROOT/envs/vlad/release.sh" promote "$RELEASE_ID"
 verify_lock
 QUALIFIED_CANDIDATE="$CANDIDATE_ROOT/$TARGET/$IMAGE_ID"
@@ -187,7 +188,7 @@ findmnt -T "$CANDIDATE_ROOT/$TARGET/$IMAGE_ID"
 test -w "$CANDIDATE_ROOT/$TARGET/$IMAGE_ID"
 test ! -w "$BUILD_PREFLIGHT_IMAGE_ROOT"
 test ! -w "$BUILD_PREFLIGHT_IMAGE_ROOT/$TARGET"
-/usr/bin/python3 "$BUILDER_HELPER" --verify-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
+/usr/bin/python3 -I -E "$BUILDER_HELPER" --verify-release-binding "$VALIDATION_ROOT/release-binding.json" --release-dir "$RELEASE_DIR" --metadata "$RELEASE_DIR/metadata.txt" --spack-lock "$BUILD_ROOT/envs/vlad/spack.lock" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --target "$TARGET" --release-id "$RELEASE_ID" --status integrity-passed
 /bin/bash "$BUILDER_CODE_ROOT/containers/images/preflight.sh" --mode build --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATION_ROOT" --image-root "$BUILD_PREFLIGHT_IMAGE_ROOT" --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256" --tool-root "$TOOL_ROOT"
 BUILDER_TOOL_EVIDENCE="$VALIDATION_ROOT/builder-tools-$TARGET-$IMAGE_ID.json"
 /bin/bash "$BUILDER_CODE_ROOT/containers/images/build-image.sh" --base nvidia-vlad --target "$TARGET" --release-dir "$RELEASE_DIR" --image-id "$IMAGE_ID" --candidate-root "$CANDIDATE_ROOT" --enroot-build-root "/vast/enroot-cache/$(uname -m)" --tool-root "$TOOL_ROOT" --tool-evidence "$BUILDER_TOOL_EVIDENCE"
@@ -206,7 +207,7 @@ SEALED_PATH="$SEALED_DIR/$(basename "$CANDIDATE_PATH")"
 ln "$CANDIDATE_PATH" "$SEALED_PATH"
 chmod 0444 "$SEALED_PATH"; chmod 0555 "$SEALED_DIR"
 BUILDER_HANDOFF="$VALIDATION_ROOT/builder-handoff-$TARGET-$IMAGE_ID.json"
-/usr/bin/python3 "$BUILDER_HELPER" --write-builder-handoff "$BUILDER_HANDOFF" --build-root "$BUILD_ROOT" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --release-binding "$VALIDATION_ROOT/release-binding.json" --builder-tools "$BUILDER_TOOL_EVIDENCE" --target "$TARGET" --image-id "$IMAGE_ID" --image "$SEALED_PATH" --image-sha256 "$CANDIDATE_SHA256" --image-size "$CANDIDATE_SIZE"
+/usr/bin/python3 -I -E "$BUILDER_HELPER" --write-builder-handoff "$BUILDER_HANDOFF" --build-root "$BUILD_ROOT" --chapar-commit "$CHAPAR_COMMIT" --source-lock-sha256 "$APPROVED_LOCK_SHA256" --release-binding "$VALIDATION_ROOT/release-binding.json" --builder-tools "$BUILDER_TOOL_EVIDENCE" --target "$TARGET" --image-id "$IMAGE_ID" --image "$SEALED_PATH" --image-sha256 "$CANDIDATE_SHA256" --image-size "$CANDIDATE_SIZE"
 BUILDER_HANDOFF_SHA256="$(sha256sum "$BUILDER_HANDOFF" | awk '{print $1}')"
 printf 'BUILDER_HANDOFF=%s\nBUILDER_HANDOFF_SHA256=%s\n' "$BUILDER_HANDOFF" "$BUILDER_HANDOFF_SHA256"
 ```
@@ -228,7 +229,7 @@ handoff drift, evidence identity/permission drift, runtime failure, or seal fail
 ```bash
 set -euo pipefail
 verify_protected_checkout() {
-  /usr/bin/python3 - "$@" <<'PY'
+  /usr/bin/python3 -I -E - "$@" <<'PY'
 import ctypes, errno, os, stat, subprocess, sys
 root, commit, *relative_paths = sys.argv[1:]
 def require(ok, message):
@@ -280,6 +281,7 @@ PY
 trusted_git() { local root="$1"; shift; env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 /usr/bin/git --no-pager --no-replace-objects -C "$root" -c "safe.directory=$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
 : "${VALIDATOR_CODE_ROOT:?}" "${CHAPAR_COMMIT:?}" "${BUILDER_HANDOFF:?}" "${BUILDER_HANDOFF_SHA256:?}" "${PYXIS_JOB_APPROVED:?}" "${PARTITION:?}" "${SITE_CONTRACT_SHA256:?}"
 export PATH=/usr/bin:/bin
+unset BASH_ENV ENV LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PYTHONHOME PYTHONPATH
 test "$PYXIS_JOB_APPROVED" = yes
 SITE_CONTRACT=/etc/chapar/vlad-image/site-contract.json
 TOOL_ROOT=/opt/chapar/vlad-image/tools/$(uname -m)
@@ -288,32 +290,32 @@ test "$VALIDATOR_CODE_ROOT" = "/vast/chapar-validator-code/$CHAPAR_COMMIT"
 verify_protected_checkout "$VALIDATOR_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py ci/install-validated-sqsh.py containers/images/preflight.sh containers/images/targets.json containers/images/sources-lock.json containers/images/tests/validate-locks.sh
 test "$(trusted_git "$VALIDATOR_CODE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"; test -z "$(trusted_git "$VALIDATOR_CODE_ROOT" status --porcelain --untracked-files=all)"
 HELPER="$VALIDATOR_CODE_ROOT/ci/verify-vlad-source-approval.py"
-HANDOFF_JSON="$(python3 "$HELPER" --verify-builder-handoff "$BUILDER_HANDOFF" --expected-sha256 "$BUILDER_HANDOFF_SHA256" --expected-chapar-commit "$CHAPAR_COMMIT")"
-mapfile -t HANDOFF_VALUES < <(python3 -c 'import json,sys; d=json.load(sys.stdin); keys=("build_root","target","image_id","image_path","image_sha256","image_size","validation_root","release_binding"); print("\n".join(str(d[k]) for k in keys))' <<<"$HANDOFF_JSON")
+HANDOFF_JSON="$(/usr/bin/python3 -I -E "$HELPER" --verify-builder-handoff "$BUILDER_HANDOFF" --expected-sha256 "$BUILDER_HANDOFF_SHA256" --expected-chapar-commit "$CHAPAR_COMMIT")"
+mapfile -t HANDOFF_VALUES < <(/usr/bin/python3 -I -E -c 'import json,sys; d=json.load(sys.stdin); keys=("build_root","target","image_id","image_path","image_sha256","image_size","validation_root","release_binding"); print("\n".join(str(d[k]) for k in keys))' <<<"$HANDOFF_JSON")
 test "${#HANDOFF_VALUES[@]}" -eq 8
 BUILD_ROOT=${HANDOFF_VALUES[0]}; TARGET=${HANDOFF_VALUES[1]}; IMAGE_ID=${HANDOFF_VALUES[2]}; IMAGE_PATH=${HANDOFF_VALUES[3]}; IMAGE_SHA256=${HANDOFF_VALUES[4]}; IMAGE_SIZE=${HANDOFF_VALUES[5]}; VALIDATION_ROOT=${HANDOFF_VALUES[6]}; RELEASE_BINDING=${HANDOFF_VALUES[7]}
 SOURCE_IMAGE_PATH="$IMAGE_PATH"
 VALIDATOR_IMAGE_ROOT=/vast/chapar-validator-images
 VALIDATOR_IMAGE_DIR="$VALIDATOR_IMAGE_ROOT/$TARGET/$IMAGE_ID/$IMAGE_SHA256"
-VALIDATOR_IMAGE_DIR_JSON="$(python3 "$HELPER" --verify-empty-evidence-directory "$VALIDATOR_IMAGE_DIR" --owner-role validator)"
-VALIDATOR_IMAGE_DIR_IDENTITY="$(python3 "$HELPER" --extract-canonical-field --schema directory-identity --field directory_identity <<<"$VALIDATOR_IMAGE_DIR_JSON")"
+VALIDATOR_IMAGE_DIR_JSON="$(/usr/bin/python3 -I -E "$HELPER" --verify-empty-evidence-directory "$VALIDATOR_IMAGE_DIR" --owner-role validator)"
+VALIDATOR_IMAGE_DIR_IDENTITY="$(/usr/bin/python3 -I -E "$HELPER" --extract-canonical-field --schema directory-identity --field directory_identity <<<"$VALIDATOR_IMAGE_DIR_JSON")"
 IMAGE_PATH="$VALIDATOR_IMAGE_DIR/$(basename "$SOURCE_IMAGE_PATH")"
-python3 "$VALIDATOR_CODE_ROOT/ci/install-validated-sqsh.py" --source "$SOURCE_IMAGE_PATH" --destination-directory "$VALIDATOR_IMAGE_DIR" --destination-name "$(basename "$SOURCE_IMAGE_PATH")" --expected-sha256 "$IMAGE_SHA256" --expected-size "$IMAGE_SIZE"
-python3 "$HELPER" --seal-evidence-directory "$VALIDATOR_IMAGE_DIR" --expected-directory-identity "$VALIDATOR_IMAGE_DIR_IDENTITY" --file-mode 0444 --directory-mode 0555
-python3 "$HELPER" --verify-sealed-evidence-directory "$VALIDATOR_IMAGE_DIR" --expected-directory-identity "$VALIDATOR_IMAGE_DIR_IDENTITY" --expected-file "$(basename "$IMAGE_PATH")" --expected-sha256 "$IMAGE_SHA256" --owner-role validator
+/usr/bin/python3 -I -E "$VALIDATOR_CODE_ROOT/ci/install-validated-sqsh.py" --source "$SOURCE_IMAGE_PATH" --destination-directory "$VALIDATOR_IMAGE_DIR" --destination-name "$(basename "$SOURCE_IMAGE_PATH")" --expected-sha256 "$IMAGE_SHA256" --expected-size "$IMAGE_SIZE"
+/usr/bin/python3 -I -E "$HELPER" --seal-evidence-directory "$VALIDATOR_IMAGE_DIR" --expected-directory-identity "$VALIDATOR_IMAGE_DIR_IDENTITY" --file-mode 0444 --directory-mode 0555
+/usr/bin/python3 -I -E "$HELPER" --verify-sealed-evidence-directory "$VALIDATOR_IMAGE_DIR" --expected-directory-identity "$VALIDATOR_IMAGE_DIR_IDENTITY" --expected-file "$(basename "$IMAGE_PATH")" --expected-sha256 "$IMAGE_SHA256" --owner-role validator
 VALIDATOR_ROOT=/vast/chapar-validator-receipts
 RECEIPT_ROOT="$VALIDATOR_ROOT/$TARGET/$IMAGE_ID/$IMAGE_SHA256"
-RECEIPT_ROOT_JSON="$(python3 "$HELPER" --verify-empty-evidence-directory "$RECEIPT_ROOT" --owner-role validator)"
-RECEIPT_ROOT_IDENTITY="$(python3 "$HELPER" --extract-canonical-field --schema directory-identity --field directory_identity <<<"$RECEIPT_ROOT_JSON")"
+RECEIPT_ROOT_JSON="$(/usr/bin/python3 -I -E "$HELPER" --verify-empty-evidence-directory "$RECEIPT_ROOT" --owner-role validator)"
+RECEIPT_ROOT_IDENTITY="$(/usr/bin/python3 -I -E "$HELPER" --extract-canonical-field --schema directory-identity --field directory_identity <<<"$RECEIPT_ROOT_JSON")"
 CANDIDATE_ROOT="$VALIDATOR_IMAGE_ROOT"
-python3 "$HELPER" --run-and-capture --output "$RECEIPT_ROOT/runtime-preflight.json" -- /bin/bash "$VALIDATOR_CODE_ROOT/containers/images/preflight.sh" --mode runtime --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --sha256 "$IMAGE_SHA256" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATOR_ROOT" --image-root /home/hpcadmin/shared/enroot-cache/chapar-vlad --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256" --tool-root "$TOOL_ROOT"
-python3 "$HELPER" --run-and-capture --output "$RECEIPT_ROOT/pyxis-smoke.txt" --capture-stderr -- srun --partition="$PARTITION" --nodes=1 --ntasks=1 --time=00:05:00 --container-image="$IMAGE_PATH" /bin/true
+/usr/bin/python3 -I -E "$HELPER" --run-and-capture --output "$RECEIPT_ROOT/runtime-preflight.json" -- /bin/bash "$VALIDATOR_CODE_ROOT/containers/images/preflight.sh" --mode runtime --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --sha256 "$IMAGE_SHA256" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATOR_ROOT" --image-root /home/hpcadmin/shared/enroot-cache/chapar-vlad --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256" --tool-root "$TOOL_ROOT"
+/usr/bin/python3 -I -E "$HELPER" --run-and-capture --output "$RECEIPT_ROOT/pyxis-smoke.txt" --capture-stderr -- srun --partition="$PARTITION" --nodes=1 --ntasks=1 --time=00:05:00 --container-image="$IMAGE_PATH" /bin/true
 RUNTIME_RECEIPT="$RECEIPT_ROOT/receipt.json"
-python3 "$HELPER" --write-runtime-receipt "$RUNTIME_RECEIPT" --builder-handoff "$BUILDER_HANDOFF" --builder-handoff-sha256 "$BUILDER_HANDOFF_SHA256" --validator-root "$VALIDATOR_ROOT" --validator-image-root "$VALIDATOR_IMAGE_ROOT" --preflight "$RECEIPT_ROOT/runtime-preflight.json" --smoke-output "$RECEIPT_ROOT/pyxis-smoke.txt" --image "$IMAGE_PATH" --sha256 "$IMAGE_SHA256" --target "$TARGET" --release-binding "$RELEASE_BINDING"
+/usr/bin/python3 -I -E "$HELPER" --write-runtime-receipt "$RUNTIME_RECEIPT" --builder-handoff "$BUILDER_HANDOFF" --builder-handoff-sha256 "$BUILDER_HANDOFF_SHA256" --validator-root "$VALIDATOR_ROOT" --validator-image-root "$VALIDATOR_IMAGE_ROOT" --preflight "$RECEIPT_ROOT/runtime-preflight.json" --smoke-output "$RECEIPT_ROOT/pyxis-smoke.txt" --image "$IMAGE_PATH" --sha256 "$IMAGE_SHA256" --target "$TARGET" --release-binding "$RELEASE_BINDING"
 RUNTIME_RECEIPT_SHA256="$(sha256sum "$RUNTIME_RECEIPT" | awk '{print $1}')"
-python3 "$HELPER" --seal-evidence-directory "$RECEIPT_ROOT" --expected-directory-identity "$RECEIPT_ROOT_IDENTITY" --file-mode 0444 --directory-mode 0555
-RECEIPT_VERIFY_JSON="$(python3 "$HELPER" --verify-sealed-evidence-directory "$RECEIPT_ROOT" --expected-directory-identity "$RECEIPT_ROOT_IDENTITY" --expected-file receipt.json --expected-sha256 "$RUNTIME_RECEIPT_SHA256" --owner-role validator)"
-test "$(python3 "$HELPER" --extract-canonical-field --schema sealed-evidence --field file_sha256 <<<"$RECEIPT_VERIFY_JSON")" = "$RUNTIME_RECEIPT_SHA256"
+/usr/bin/python3 -I -E "$HELPER" --seal-evidence-directory "$RECEIPT_ROOT" --expected-directory-identity "$RECEIPT_ROOT_IDENTITY" --file-mode 0444 --directory-mode 0555
+RECEIPT_VERIFY_JSON="$(/usr/bin/python3 -I -E "$HELPER" --verify-sealed-evidence-directory "$RECEIPT_ROOT" --expected-directory-identity "$RECEIPT_ROOT_IDENTITY" --expected-file receipt.json --expected-sha256 "$RUNTIME_RECEIPT_SHA256" --owner-role validator)"
+test "$(/usr/bin/python3 -I -E "$HELPER" --extract-canonical-field --schema sealed-evidence --field file_sha256 <<<"$RECEIPT_VERIFY_JSON")" = "$RUNTIME_RECEIPT_SHA256"
 printf 'RUNTIME_RECEIPT=%s\nRUNTIME_RECEIPT_SHA256=%s\n' "$RUNTIME_RECEIPT" "$RUNTIME_RECEIPT_SHA256"
 ```
 
@@ -334,7 +336,7 @@ preflight failure, evidence drift, existing final path, or durability uncertaint
 ```bash
 set -euo pipefail
 verify_protected_checkout() {
-  /usr/bin/python3 - "$@" <<'PY'
+  /usr/bin/python3 -I -E - "$@" <<'PY'
 import ctypes, errno, os, stat, subprocess, sys
 root, commit, *relative_paths = sys.argv[1:]
 def require(ok, message):
@@ -386,17 +388,18 @@ PY
 trusted_git() { local root="$1"; shift; env -i PATH=/usr/bin:/bin HOME=/nonexistent LANG=C GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0 /usr/bin/git --no-pager --no-replace-objects -C "$root" -c "safe.directory=$root" -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
 : "${PUBLISHER_CODE_ROOT:?}" "${CHAPAR_COMMIT:?}" "${BUILDER_HANDOFF:?}" "${BUILDER_HANDOFF_SHA256:?}" "${RUNTIME_RECEIPT:?}" "${RUNTIME_RECEIPT_SHA256:?}" "${SITE_CONTRACT_SHA256:?}"
 export PATH=/usr/bin:/bin
+unset BASH_ENV ENV LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PYTHONHOME PYTHONPATH
 SITE_CONTRACT=/etc/chapar/vlad-image/site-contract.json
 test "$PUBLISHER_CODE_ROOT" = "/vast/chapar-publisher-code/$CHAPAR_COMMIT"
 verify_protected_checkout "$PUBLISHER_CODE_ROOT" "$CHAPAR_COMMIT" ci/verify-vlad-source-approval.py ci/install-validated-sqsh.py containers/images/preflight.sh containers/images/targets.json containers/images/sources-lock.json containers/images/tests/validate-locks.sh
 test "$(trusted_git "$PUBLISHER_CODE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"; test -z "$(trusted_git "$PUBLISHER_CODE_ROOT" status --porcelain --untracked-files=all)"
 HELPER="$PUBLISHER_CODE_ROOT/ci/verify-vlad-source-approval.py"
-HANDOFF_JSON="$(python3 "$HELPER" --verify-builder-handoff "$BUILDER_HANDOFF" --expected-sha256 "$BUILDER_HANDOFF_SHA256" --expected-chapar-commit "$CHAPAR_COMMIT")"
-mapfile -t HANDOFF_VALUES < <(python3 -c 'import json,sys; d=json.load(sys.stdin); keys=("build_root","target","image_id","image_path","image_sha256","image_size","validation_root","release_binding"); print("\n".join(str(d[k]) for k in keys))' <<<"$HANDOFF_JSON")
+HANDOFF_JSON="$(/usr/bin/python3 -I -E "$HELPER" --verify-builder-handoff "$BUILDER_HANDOFF" --expected-sha256 "$BUILDER_HANDOFF_SHA256" --expected-chapar-commit "$CHAPAR_COMMIT")"
+mapfile -t HANDOFF_VALUES < <(/usr/bin/python3 -I -E -c 'import json,sys; d=json.load(sys.stdin); keys=("build_root","target","image_id","image_path","image_sha256","image_size","validation_root","release_binding"); print("\n".join(str(d[k]) for k in keys))' <<<"$HANDOFF_JSON")
 test "${#HANDOFF_VALUES[@]}" -eq 8
 BUILD_ROOT=${HANDOFF_VALUES[0]}; TARGET=${HANDOFF_VALUES[1]}; IMAGE_ID=${HANDOFF_VALUES[2]}; IMAGE_PATH=${HANDOFF_VALUES[3]}; IMAGE_SHA256=${HANDOFF_VALUES[4]}; IMAGE_SIZE=${HANDOFF_VALUES[5]}; VALIDATION_ROOT=${HANDOFF_VALUES[6]}; RELEASE_BINDING=${HANDOFF_VALUES[7]}
-RUNTIME_JSON="$(python3 "$HELPER" --verify-runtime-receipt "$RUNTIME_RECEIPT" --expected-sha256 "$RUNTIME_RECEIPT_SHA256" --builder-handoff "$BUILDER_HANDOFF" --builder-handoff-sha256 "$BUILDER_HANDOFF_SHA256" --target "$TARGET" --release-binding "$RELEASE_BINDING")"
-mapfile -t RUNTIME_VALUES < <(python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(str(d[k]) for k in ("image_path","image_sha256","validator_root","validator_image_root")))' <<<"$RUNTIME_JSON")
+RUNTIME_JSON="$(/usr/bin/python3 -I -E "$HELPER" --verify-runtime-receipt "$RUNTIME_RECEIPT" --expected-sha256 "$RUNTIME_RECEIPT_SHA256" --builder-handoff "$BUILDER_HANDOFF" --builder-handoff-sha256 "$BUILDER_HANDOFF_SHA256" --target "$TARGET" --release-binding "$RELEASE_BINDING")"
+mapfile -t RUNTIME_VALUES < <(/usr/bin/python3 -I -E -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(str(d[k]) for k in ("image_path","image_sha256","validator_root","validator_image_root")))' <<<"$RUNTIME_JSON")
 test "${#RUNTIME_VALUES[@]}" -eq 4
 IMAGE_PATH=${RUNTIME_VALUES[0]}; IMAGE_SHA256=${RUNTIME_VALUES[1]}; VALIDATOR_ROOT=${RUNTIME_VALUES[2]}; CANDIDATE_ROOT=${RUNTIME_VALUES[3]}
 IMAGE_ROOT=/home/hpcadmin/shared/enroot-cache/chapar-vlad
@@ -404,16 +407,16 @@ FINAL_RELEASES_ROOT="$IMAGE_ROOT/$TARGET/releases"
 test -d "$IMAGE_ROOT"; test -d "$IMAGE_ROOT/$TARGET"; test -d "$FINAL_RELEASES_ROOT"
 PUBLISHER_EVIDENCE_ROOT=/home/hpcadmin/shared/enroot-cache/chapar-vlad-evidence
 PUBLISHER_RUN_ROOT="$PUBLISHER_EVIDENCE_ROOT/$TARGET/$IMAGE_ID/$IMAGE_SHA256"
-PUBLISHER_RUN_JSON="$(python3 "$HELPER" --verify-empty-evidence-directory "$PUBLISHER_RUN_ROOT" --owner-role publisher)"
-PUBLISHER_RUN_IDENTITY="$(python3 "$HELPER" --extract-canonical-field --schema directory-identity --field directory_identity <<<"$PUBLISHER_RUN_JSON")"
-python3 "$HELPER" --run-and-capture --output "$PUBLISHER_RUN_ROOT/publisher-preflight.json" -- /bin/bash "$PUBLISHER_CODE_ROOT/containers/images/preflight.sh" --mode publisher --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --sha256 "$IMAGE_SHA256" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATOR_ROOT" --image-root "$IMAGE_ROOT" --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256"
+PUBLISHER_RUN_JSON="$(/usr/bin/python3 -I -E "$HELPER" --verify-empty-evidence-directory "$PUBLISHER_RUN_ROOT" --owner-role publisher)"
+PUBLISHER_RUN_IDENTITY="$(/usr/bin/python3 -I -E "$HELPER" --extract-canonical-field --schema directory-identity --field directory_identity <<<"$PUBLISHER_RUN_JSON")"
+/usr/bin/python3 -I -E "$HELPER" --run-and-capture --output "$PUBLISHER_RUN_ROOT/publisher-preflight.json" -- /bin/bash "$PUBLISHER_CODE_ROOT/containers/images/preflight.sh" --mode publisher --base nvidia-vlad --target "$TARGET" --image-id "$IMAGE_ID" --sha256 "$IMAGE_SHA256" --candidate-root "$CANDIDATE_ROOT" --validation-root "$VALIDATOR_ROOT" --image-root "$IMAGE_ROOT" --site-contract "$SITE_CONTRACT" --site-contract-sha256 "$SITE_CONTRACT_SHA256"
 PUBLISHER_PREFLIGHT_SHA256="$(sha256sum "$PUBLISHER_RUN_ROOT/publisher-preflight.json" | awk '{print $1}')"
-python3 "$HELPER" --seal-evidence-directory "$PUBLISHER_RUN_ROOT" --expected-directory-identity "$PUBLISHER_RUN_IDENTITY" --file-mode 0444 --directory-mode 0555
+/usr/bin/python3 -I -E "$HELPER" --seal-evidence-directory "$PUBLISHER_RUN_ROOT" --expected-directory-identity "$PUBLISHER_RUN_IDENTITY" --file-mode 0444 --directory-mode 0555
 FINAL_PATH="$FINAL_RELEASES_ROOT/$(basename "$IMAGE_PATH")"
 test ! -e "$FINAL_PATH"
-PUBLISHER_VERIFY_JSON="$(python3 "$HELPER" --verify-sealed-evidence-directory "$PUBLISHER_RUN_ROOT" --expected-directory-identity "$PUBLISHER_RUN_IDENTITY" --expected-file publisher-preflight.json --expected-sha256 "$PUBLISHER_PREFLIGHT_SHA256" --owner-role publisher)"
-test "$(python3 "$HELPER" --extract-canonical-field --schema sealed-evidence --field file_sha256 <<<"$PUBLISHER_VERIFY_JSON")" = "$PUBLISHER_PREFLIGHT_SHA256"
-python3 "$PUBLISHER_CODE_ROOT/ci/install-validated-sqsh.py" --source "$IMAGE_PATH" --destination-directory "$FINAL_RELEASES_ROOT" --destination-name "$(basename "$IMAGE_PATH")" --expected-sha256 "$IMAGE_SHA256" --expected-size "$IMAGE_SIZE"
+PUBLISHER_VERIFY_JSON="$(/usr/bin/python3 -I -E "$HELPER" --verify-sealed-evidence-directory "$PUBLISHER_RUN_ROOT" --expected-directory-identity "$PUBLISHER_RUN_IDENTITY" --expected-file publisher-preflight.json --expected-sha256 "$PUBLISHER_PREFLIGHT_SHA256" --owner-role publisher)"
+test "$(/usr/bin/python3 -I -E "$HELPER" --extract-canonical-field --schema sealed-evidence --field file_sha256 <<<"$PUBLISHER_VERIFY_JSON")" = "$PUBLISHER_PREFLIGHT_SHA256"
+/usr/bin/python3 -I -E "$PUBLISHER_CODE_ROOT/ci/install-validated-sqsh.py" --source "$IMAGE_PATH" --destination-directory "$FINAL_RELEASES_ROOT" --destination-name "$(basename "$IMAGE_PATH")" --expected-sha256 "$IMAGE_SHA256" --expected-size "$IMAGE_SIZE"
 test "$(sha256sum "$FINAL_PATH" | awk '{print $1}')" = "$IMAGE_SHA256"
 test "$(stat -c %s "$FINAL_PATH")" = "$IMAGE_SIZE"
 ```

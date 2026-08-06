@@ -68,7 +68,7 @@ REQUIRED_BLOCK_ANCHORS: Final = (
     'test "$BUILDER_CODE_ROOT" = "/vast/chapar-builder-code/$CHAPAR_COMMIT"',
     'test "$(trusted_git "$BUILDER_CODE_ROOT" rev-parse HEAD)" = "$CHAPAR_COMMIT"',
     'etc/system/base/repos.yaml',
-    '/usr/bin/python3 "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT"',
+    '/usr/bin/python3 -I -E "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT"',
     '--tool-root "$TOOL_ROOT" --tool-evidence "$BUILDER_TOOL_EVIDENCE"',
     '--builder-tools "$BUILDER_TOOL_EVIDENCE"',
     'grep -Fx "release_id: $RELEASE_ID" "$RELEASE_DIR/metadata.txt"',
@@ -169,6 +169,17 @@ def validate_runbook(path: Path) -> None:
         require(publisher.count(anchor) == 1, f"publisher protected gate drift: {anchor}")
     for forbidden in ("bash envs/vlad/release.sh", "python3 ci/verify-vlad-source-approval.py", "./validation/run", "bash containers/images/"):
         require(forbidden not in builder, f"builder executes repository code outside protected checkout: {forbidden}")
+    for block, role in ((builder, "builder"), (validator, "validator"), (publisher, "publisher")):
+        require(block.count("unset BASH_ENV ENV LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PYTHONHOME PYTHONPATH") == 1,
+                f"{role} does not clear shell, loader, and Python injection variables exactly once")
+        isolated = block.replace("/usr/bin/python3 -I -E ", "")
+        if role == "builder":
+            sibling_import = '/usr/bin/python3 -E -s "$BUILDER_CODE_ROOT/envs/vlad/tests/target-policy-test.py" '
+            require(block.count(sibling_import) == 1,
+                    "builder target-policy check must use the environment-ignoring, no-user-site sibling-import exception")
+            isolated = isolated.replace(sibling_import, "")
+        require("python3 " not in isolated,
+                f"{role} executes Python without the fixed isolated interpreter")
     for block, role in ((validator, "validator"), (publisher, "publisher")):
         require("env -i PATH=/usr/bin:/bin" in block, f"{role} Git environment is not empty")
         require("core.untrackedCache=false" in block, f"{role} untracked cache is not disabled")

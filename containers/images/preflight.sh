@@ -1,8 +1,11 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
+unset BASH_ENV ENV LD_AUDIT LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PYTHONHOME PYTHONPATH
+export PATH=/usr/bin:/bin
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec python3 - "${SCRIPT_DIR}" "$@" <<'PY'
+exec /usr/bin/python3 -I -E - "${SCRIPT_DIR}" "$@" <<'PY'
 from __future__ import annotations
 
 import argparse
@@ -19,6 +22,22 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any, Final
+
+FORBIDDEN_STARTUP_ENV: Final = frozenset(
+    {
+        "BASH_ENV",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "ENV",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "PYTHONHOME",
+        "PYTHONPATH",
+    }
+)
+if FORBIDDEN_STARTUP_ENV & os.environ.keys():
+    raise SystemExit("protected preflight startup environment was not isolated")
 
 SCRIPT_DIR = Path(sys.argv[1]).resolve()
 sys.argv = [sys.argv[0], *sys.argv[2:]]
@@ -240,7 +259,7 @@ def validate_targets(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
         fail("target registry has unknown fields or unsupported schema")
     targets = document.get("targets")
     if not isinstance(targets, dict) or set(targets) != set(EXPECTED_TARGETS):
-        fail("target registry must contain exactly the two approved targets")
+        fail("target registry must contain exactly the approved targets")
     for name, expected in EXPECTED_TARGETS.items():
         target = targets[name]
         approved = {key: value for key, value in expected.items() if key != "hardware_class"}
@@ -259,11 +278,16 @@ def validate_source_lock(path: Path, timeout_seconds: int) -> dict[str, Any]:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             fail("source lock is not a regular file")
-        environment = os.environ.copy()
-        environment["SOURCES_PATH_OVERRIDE"] = f"/dev/fd/{descriptor}"
+        environment = {
+            "HOME": "/nonexistent",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/usr/bin:/bin",
+            "SOURCES_PATH_OVERRIDE": f"/dev/fd/{descriptor}",
+        }
         try:
             completed = subprocess.run(
-                ["bash", str(LOCK_VALIDATOR), "--require-complete"],
+                ["/bin/bash", str(LOCK_VALIDATOR), "--require-complete"],
                 check=False,
                 text=True,
                 capture_output=True,
@@ -325,7 +349,7 @@ def validate_contract(document: dict[str, Any]) -> dict[str, Any]:
             all_identities[identity] = role
     target_contracts = document.get("targets")
     if not isinstance(target_contracts, dict) or set(target_contracts) != set(EXPECTED_TARGETS):
-        fail("site contract must contain exactly both approved targets")
+        fail("site contract must contain exactly the approved targets")
     for name, expected in EXPECTED_TARGETS.items():
         target = target_contracts[name]
         if not isinstance(target, dict) or set(target) != {"hardware_class", "partition", "constraint"}:

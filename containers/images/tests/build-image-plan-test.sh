@@ -20,6 +20,7 @@ TOOL_CALL_LOG="${TMP_BASE}/tool-calls.log"
 HOME_ROOT="${TMP_BASE}/home"
 OUTPUT_ROOT="${TMP_BASE}/outputs"
 PYTHON_GUARD_ROOT="${TMP_BASE}/python-guard"
+PYTHON_INJECTION_MARKER="${TMP_BASE}/python-injection-marker"
 IMAGE_ID="fixture-image"
 ROOT_HASH="aaaabbbb"
 RUNTIME_HASH="ccccdddd"
@@ -35,8 +36,8 @@ cat >"${PIPELINE_ROOT}/tests/validate-locks.sh" <<'SH'
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 "${SCRIPT_DIR}/validate-locks.real.sh" "$@"
-if [[ -n "${VALIDATOR_SWAP_FROM:-}" && -n "${VALIDATOR_SWAP_TO:-}" ]]; then
-  mv "${VALIDATOR_SWAP_FROM}" "${VALIDATOR_SWAP_TO}"
+if [[ -e "${SCRIPT_DIR}/swap-source-lock" ]]; then
+  mv "${SCRIPT_DIR}/../replacement-lock.json" "${SCRIPT_DIR}/../sources-lock.json"
 fi
 SH
 cp "${ROOT_DIR}/containers/images/targets.json" "${PIPELINE_ROOT}/targets.json"
@@ -47,7 +48,11 @@ printf 'candidate sentinel\n' >"${CANDIDATE_ROOT}/sentinel.txt"
 printf 'final sentinel\n' >"${FINAL_ROOT}/sentinel.txt"
 : >"${TOOL_CALL_LOG}"
 cat >"${PYTHON_GUARD_ROOT}/sitecustomize.py" <<'PY'
+import os
 import socket
+from pathlib import Path
+
+Path(os.environ["PYTHON_INJECTION_MARKER"]).touch()
 
 def denied(*args, **kwargs):
     raise RuntimeError("socket access denied by plan fixture")
@@ -266,11 +271,12 @@ invoke_plan() {
     HOME="${HOME_ROOT}" \
     LC_ALL=C \
     PATH="${TOOLS_ROOT}:/usr/bin:/bin" \
+      LD_AUDIT= \
+      DYLD_INSERT_LIBRARIES= \
       PYTHONPATH="${PYTHON_GUARD_ROOT}" \
+      PYTHON_INJECTION_MARKER="${PYTHON_INJECTION_MARKER}" \
       TMPDIR="${TMP_BASE}" \
       TOOL_CALL_LOG="${TOOL_CALL_LOG}" \
-      VALIDATOR_SWAP_FROM="${VALIDATOR_SWAP_FROM:-}" \
-      VALIDATOR_SWAP_TO="${VALIDATOR_SWAP_TO:-}" \
     "${PLAN_SCRIPT}" \
       --base "${base}" \
       --target "${target}" \
@@ -364,6 +370,11 @@ printf 'PASS: source-lock validator exposes no synthetic complete-lock export mo
 
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
 expect_success x86-plan invoke_plan linux-x86_64-v4
+if [[ -e "${PYTHON_INJECTION_MARKER}" ]]; then
+  printf 'FAIL: build-image loaded caller-controlled Python startup code\n' >&2
+  exit 1
+fi
+printf 'PASS: build-image ignored caller-controlled Python startup code\n'
 grep -Fqx 'artifact:      nvidia-vlad+26.02-linux-x86_64-v4.sqsh' "${OUTPUT_ROOT}/x86-plan.out"
 
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
@@ -376,11 +387,9 @@ value["status"] = "blocked"
 value["unresolved"] = [{"category": "nvidia_hpc_benchmarks_oci"}]
 json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
 PY
-VALIDATOR_SWAP_FROM="${PIPELINE_ROOT}/replacement-lock.json"
-VALIDATOR_SWAP_TO="${PIPELINE_ROOT}/sources-lock.json"
-export VALIDATOR_SWAP_FROM VALIDATOR_SWAP_TO
+touch "${PIPELINE_ROOT}/tests/swap-source-lock"
 expect_failure descriptor-bound-lock 'source lock changed while it was being validated' invoke_plan linux-x86_64-v4
-unset VALIDATOR_SWAP_FROM VALIDATOR_SWAP_TO
+rm "${PIPELINE_ROOT}/tests/swap-source-lock"
 "${PYTHON_BIN}" - "${PIPELINE_ROOT}/sources-lock.json" <<'PY'
 import json, sys
 raise SystemExit(0 if json.load(open(sys.argv[1], encoding="utf-8"))["status"] == "blocked" else 1)
