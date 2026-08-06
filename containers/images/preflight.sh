@@ -249,23 +249,53 @@ def validate_targets(document: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def validate_source_lock(path: Path, timeout_seconds: int) -> dict[str, Any]:
-    environment = os.environ.copy()
-    environment["SOURCES_PATH_OVERRIDE"] = str(path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
-        completed = subprocess.run(
-            ["bash", str(LOCK_VALIDATOR), "--require-complete"],
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-            env=environment,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        fail(f"source-lock validator failed or timed out: {error}")
-    if completed.returncode != 0:
-        detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "closed source-lock validation failed"
-        fail(f"source lock is blocked or invalid: {detail}")
-    return load_json(path, "source lock")
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        fail(f"source lock cannot be opened securely: {error}")
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            fail("source lock is not a regular file")
+        environment = os.environ.copy()
+        environment["SOURCES_PATH_OVERRIDE"] = f"/dev/fd/{descriptor}"
+        try:
+            completed = subprocess.run(
+                ["bash", str(LOCK_VALIDATOR), "--require-complete"],
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+                env=environment,
+                pass_fds=(descriptor,),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            fail(f"source-lock validator failed or timed out: {error}")
+        if completed.returncode != 0:
+            detail = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "closed source-lock validation failed"
+            fail(f"source lock is blocked or invalid: {detail}")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        payload = bytearray()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            payload.extend(chunk)
+        after = os.fstat(descriptor)
+        before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        if before_identity != after_identity:
+            fail("source lock changed while it was being validated")
+        try:
+            loaded = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
+        except (UnicodeError, json.JSONDecodeError) as error:
+            fail(f"cannot read valid source lock JSON from its validated descriptor: {error}")
+        if not isinstance(loaded, dict):
+            fail("source lock must be a JSON object")
+        return loaded
+    except OSError as error:
+        fail(f"source lock could not be read from its validated descriptor: {error}")
+    finally:
+        os.close(descriptor)
+    raise AssertionError("unreachable")
 
 
 def validate_contract(document: dict[str, Any]) -> dict[str, Any]:
@@ -714,6 +744,9 @@ def main() -> int:
         if not isinstance(loaded_runtime, dict):
             fail("live inventory does not contain runtime capability data")
         runtime = loaded_runtime
+        missing = [feature for feature in RUNTIME_FEATURES[args.target] if runtime.get(feature) is not True]
+        if missing:
+            raise OptionalRuntimeFeatureMissing("absent declared runtime hardware/features: " + ",".join(missing))
         for key in RUNTIME_DIAGNOSTICS[args.target]:
             value = runtime.get(key)
             if not isinstance(value, (str, list)) or value in ("", []):
@@ -726,9 +759,6 @@ def main() -> int:
             diagnostics["cpuid_isa_level"] != expected_isa or diagnostics["elf_isa_level"] != expected_isa
         ):
             fail(f"{args.target} runtime requires physical CPUID and ELF {expected_isa} evidence")
-        missing = [feature for feature in RUNTIME_FEATURES[args.target] if runtime.get(feature) is not True]
-        if missing:
-            raise OptionalRuntimeFeatureMissing("absent declared runtime hardware/features: " + ",".join(missing))
 
     qualified_candidate = paths["candidate_root"] / args.target / args.image_id
     selected_image_root = paths["image_root"] / args.target

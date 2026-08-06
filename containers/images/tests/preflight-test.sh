@@ -492,6 +492,7 @@ import json, sys
 path = sys.argv[1]
 value = json.load(open(path))
 value["runtime"]["gpu"] = False
+value["runtime"].pop("gpu_topology")
 json.dump(value, open(path, "w"))
 PY
 rm -f "${SIDE_EFFECT_MARKER}"

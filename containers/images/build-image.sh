@@ -143,6 +143,62 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     raise AssertionError("unreachable")
 
 
+def load_validated_source_lock() -> dict[str, Any]:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(SOURCES_PATH, flags)
+    except OSError as error:
+        fail(f"source lock is missing or cannot be opened securely: {error}")
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            fail(f"source lock is not a regular file: {SOURCES_PATH}")
+        validator_environment = os.environ.copy()
+        validator_environment["SOURCES_PATH_OVERRIDE"] = f"/dev/fd/{descriptor}"
+        try:
+            subprocess.run(
+                [str(LOCK_VALIDATOR), "--require-complete"],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=validator_environment,
+                pass_fds=(descriptor,),
+            )
+        except FileNotFoundError:
+            fail(f"source-lock validator is missing: {LOCK_VALIDATOR}")
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or error.stdout or "").strip().splitlines()
+            tail = detail[-1] if detail else f"exit {error.returncode}"
+            fail(f"source lock failed complete structural validation: {tail}")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        payload = bytearray()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            payload.extend(chunk)
+        after = os.fstat(descriptor)
+        def identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+            return (
+                info.st_dev,
+                info.st_ino,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            )
+        if identity(before) != identity(after):
+            fail("source lock changed while it was being validated")
+        try:
+            loaded = json.loads(payload.decode("utf-8"), object_pairs_hook=unique_object)
+        except (UnicodeError, ValueError) as error:
+            fail(f"source lock is unreadable or malformed: {error}")
+        if not isinstance(loaded, dict):
+            fail("source lock must be a JSON object")
+        return loaded
+    except OSError as error:
+        fail(f"source lock could not be read from its validated descriptor: {error}")
+    finally:
+        os.close(descriptor)
+    raise AssertionError("unreachable")
+
+
 def absolute(raw: str, label: str) -> Path:
     path = Path(raw)
     if not path.is_absolute():
@@ -187,23 +243,7 @@ def resolve_base_descriptor(base: dict[str, str], target: str) -> str:
     `docker://nvcr.io#<image>:<tag>` tag import would violate the lock's
     floating_input_rule, so the digest must come from the lock.
     """
-    validator_environment = os.environ.copy()
-    validator_environment["SOURCES_PATH_OVERRIDE"] = str(SOURCES_PATH)
-    try:
-        subprocess.run(
-            [str(LOCK_VALIDATOR), "--require-complete"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=validator_environment,
-        )
-    except FileNotFoundError:
-        fail(f"source-lock validator is missing: {LOCK_VALIDATOR}")
-    except subprocess.CalledProcessError as error:
-        detail = (error.stderr or error.stdout or "").strip().splitlines()
-        tail = detail[-1] if detail else f"exit {error.returncode}"
-        fail(f"source lock failed complete structural validation: {tail}")
-    lock = load_json(SOURCES_PATH, "source lock")
+    lock = load_validated_source_lock()
     status = lock.get("status")
     unresolved = lock.get("unresolved") or []
     if status != "complete" or unresolved:
@@ -271,34 +311,38 @@ def link_no_clobber(source: Path, destination: Path, label: str) -> os.stat_resu
     return info
 
 
-def unlink_exact_publication(destination: Path, source_info: os.stat_result, label: str) -> None:
+def publish_pair_no_clobber(
+    artifact_source: Path,
+    artifact: Path,
+    checksum_source: Path,
+    checksum: Path,
+    checksum_payload: str,
+) -> None:
+    """Publish without overwrites, unsafe rollback, or a valid checksum first."""
+    checksum_descriptor = os.open(
+        checksum_source,
+        os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
     try:
-        published = destination.lstat()
-    except FileNotFoundError:
-        return
-    if (published.st_dev, published.st_ino) != (source_info.st_dev, source_info.st_ino):
-        fail(f"{label} rollback refused a replaced destination: {destination}")
-    destination.unlink()
-
-
-def publish_pair_no_clobber(artifact_source: Path, artifact: Path, checksum_source: Path, checksum: Path) -> None:
-    """Publish a checksum/artifact pair without overwrites or artifact-only residue.
-
-    The checksum is linked first. If the artifact link loses a race, the exact
-    checksum inode is rolled back. A crash can therefore expose a checksum
-    before its artifact, but never an artifact whose checksum was not already
-    published.
-    """
-    published: list[tuple[Path, os.stat_result, str]] = []
-    try:
-        checksum_info = link_no_clobber(checksum_source, checksum, "candidate checksum")
-        published.append((checksum, checksum_info, "candidate checksum"))
-        artifact_info = link_no_clobber(artifact_source, artifact, "candidate artifact")
-        published.append((artifact, artifact_info, "candidate artifact"))
-    except Exception:
-        for destination, source_info, label in reversed(published):
-            unlink_exact_publication(destination, source_info, label)
-        raise
+        checksum_info = os.fstat(checksum_descriptor)
+        if not stat.S_ISREG(checksum_info.st_mode) or checksum_info.st_uid != os.geteuid() or checksum_info.st_nlink != 1:
+            fail(f"candidate checksum source is not a trusted regular file: {checksum_source}")
+        os.fchmod(checksum_descriptor, 0o444)
+        link_no_clobber(checksum_source, checksum, "candidate checksum")
+        link_no_clobber(artifact_source, artifact, "candidate artifact")
+        payload = checksum_payload.encode("utf-8")
+        os.lseek(checksum_descriptor, 0, os.SEEK_SET)
+        os.ftruncate(checksum_descriptor, 0)
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(checksum_descriptor, payload[offset:])
+        os.fsync(checksum_descriptor)
+        published = checksum.lstat()
+        current = os.fstat(checksum_descriptor)
+        if (published.st_dev, published.st_ino) != (current.st_dev, current.st_ino):
+            fail(f"candidate checksum publication identity changed: {checksum}")
+    finally:
+        os.close(checksum_descriptor)
     artifact_source.unlink()
     checksum_source.unlink()
 
@@ -316,8 +360,9 @@ def publication_self_test() -> None:
         artifact = root / "candidate.sqsh"
         checksum = root / "candidate.sqsh.sha256"
         artifact_source = source("artifact.partial", "artifact\n")
-        checksum_source = source("checksum.partial", "digest  candidate.sqsh\n")
-        publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum)
+        checksum_source = source("checksum.partial", "PENDING\n")
+        checksum_source.chmod(0o600)
+        publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum, "digest  candidate.sqsh\n")
         if artifact.read_text(encoding="utf-8") != "artifact\n" or checksum.read_text(encoding="utf-8") != "digest  candidate.sqsh\n":
             fail("publication self-test changed successful pair bytes")
 
@@ -326,30 +371,33 @@ def publication_self_test() -> None:
         artifact.write_text("retained artifact\n", encoding="utf-8")
         artifact.chmod(0o444)
         artifact_source = source("artifact-race.partial", "new artifact\n")
-        checksum_source = source("checksum-race.partial", "new digest\n")
+        checksum_source = source("checksum-race.partial", "PENDING\n")
+        checksum_source.chmod(0o600)
         try:
-            publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum)
+            publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum, "new digest\n")
         except BuildError:
             pass
         else:
             fail("publication self-test overwrote an artifact collision")
-        if artifact.read_text(encoding="utf-8") != "retained artifact\n" or checksum.exists():
-            fail("artifact collision left changed bytes or checksum residue")
+        if artifact.read_text(encoding="utf-8") != "retained artifact\n" or checksum.read_text(encoding="utf-8") != "PENDING\n":
+            fail("artifact collision changed the artifact or exposed a valid checksum")
 
         artifact.unlink()
+        checksum.unlink()
         checksum.write_text("retained checksum\n", encoding="utf-8")
         checksum.chmod(0o444)
         artifact_source = source("artifact-checksum-race.partial", "new artifact\n")
-        checksum_source = source("checksum-checksum-race.partial", "new digest\n")
+        checksum_source = source("checksum-checksum-race.partial", "PENDING\n")
+        checksum_source.chmod(0o600)
         try:
-            publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum)
+            publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum, "new digest\n")
         except BuildError:
             pass
         else:
             fail("publication self-test overwrote a checksum collision")
         if artifact.exists() or checksum.read_text(encoding="utf-8") != "retained checksum\n":
             fail("checksum collision published an artifact or changed checksum bytes")
-    print("PASS: candidate artifact/checksum pair publication is no-clobber and rollback-safe")
+    print("PASS: candidate artifact/checksum pair publication is no-clobber and crash-safe")
 
 
 # ------------------------------------------------------------ release closure --
@@ -408,17 +456,23 @@ def runtime_closure(release_dir: Path) -> list[str]:
             fail(f"release spack.lock references an unknown spec hash: {digest}")
         for edge in node.get("dependencies") or []:
             if not isinstance(edge, dict):
-                continue
+                fail(f"release spack.lock dependency edge is malformed: {digest}")
             # Spack has spelled this key both "type" and "deptypes"/"parameters"
             # across versions; accept whichever the lock carries.
             raw = edge.get("type") or edge.get("deptypes") or (edge.get("parameters") or {}).get("deptypes") or []
-            deptypes = {raw} if isinstance(raw, str) else set(raw)
+            if isinstance(raw, str):
+                deptypes = {raw}
+            elif isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+                deptypes = set(raw)
+            else:
+                fail(f"release spack.lock dependency edge has malformed deptypes: {digest}")
             if not deptypes:
                 fail(f"release spack.lock dependency edge has no deptype: {digest}")
             if deptypes & RUNTIME_DEPTYPES:
                 child = edge.get("hash") or edge.get("id")
-                if isinstance(child, str):
-                    queue.append(child)
+                if not isinstance(child, str) or child not in concrete:
+                    fail(f"release spack.lock runtime dependency edge has no valid child: {digest}")
+                queue.append(child)
     return selected
 
 
@@ -666,11 +720,16 @@ def main() -> int:
             checksum_fd, checksum_raw = tempfile.mkstemp(prefix=f".{artifact_name}.sha256.partial.", dir=work)
             checksum_partial = Path(checksum_raw)
             with os.fdopen(checksum_fd, "w", encoding="utf-8") as stream:
-                stream.write(f"{digest}  {artifact_name}\n")
+                stream.write("PENDING\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            checksum_partial.chmod(0o444)
-            publish_pair_no_clobber(partial, out, checksum_partial, checksum)
+            publish_pair_no_clobber(
+                partial,
+                out,
+                checksum_partial,
+                checksum,
+                f"{digest}  {artifact_name}\n",
+            )
         finally:
             partial.unlink(missing_ok=True)
             if checksum_partial is not None:

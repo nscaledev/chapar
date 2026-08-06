@@ -138,7 +138,9 @@ lock-gate (nscale-k8s) ──► build-env (nscale-chapar-builder, per env×arch
      category is unresolved. This holds even after a specific base's own
      category resolves (`ubuntu_base_oci` already has: it is fully resolved
      against the real `ubuntu:24.04` digest, but the lock as a whole is still
-     `blocked` on five other categories, so builds for *both* bases stay
+     `blocked` on the NVIDIA OCI descriptor, Ubuntu snapshot and archive key,
+     Ubuntu builder/final package sets, builder tools, and Actions runner
+     archives, so builds for *both* bases stay
      gated until every category clears). This is the supply-chain gate: no
      tag-based pulls, ever.
    - `containers/images/tests/preflight-test.sh` and
@@ -194,11 +196,13 @@ lock-gate (nscale-k8s) ──► build-env (nscale-chapar-builder, per env×arch
 
 ## Open items before implementation
 
-1. Resolve `sources-lock.json` to `complete`: lock the
-   `nvidia_hpc_benchmarks_oci` index/descriptor digests (needs `skopeo` and
-   NGC reachability/credentials on a builder — `ubuntu_base_oci` is already
-   resolved and needed no credentials, since Docker Hub serves that image
-   anonymously).
+1. Resolve every remaining fixed category in `sources-lock.json`: the
+   `nvidia_hpc_benchmarks_oci` index/descriptor digests, Ubuntu snapshot and
+   archive key, Ubuntu builder/final package sets, builder tools, and Actions
+   runner archives. The NVIDIA OCI lock needs `skopeo` and NGC
+   reachability/credentials on a builder. `ubuntu_base_oci` is already
+   resolved and needed no credentials because Docker Hub serves it
+   anonymously.
 2. Provision the `nscale-chapar-builder` static runner group
    (`nscaledev/github-runner`'s `static-runner/` Terraform + Ansible, pointed
    at a new OpenStack project/VMs) and have it restricted to

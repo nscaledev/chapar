@@ -607,11 +607,6 @@ validate_targets(targets)
 validate_source_shape(sources, mode == "--require-complete")
 validate_repos_config(repos_path, sources)
 
-if mode == "--emit-synthetic-complete":
-    complete = synthetic_complete_sources(sources)
-    validate_source_shape(complete, True)
-    print(json.dumps(complete, sort_keys=True, separators=(",", ":")))
-    raise SystemExit(0)
 if mode not in ("", "--require-complete", "--self-test"):
     raise ValueError(f"unknown validation mode: {mode}")
 

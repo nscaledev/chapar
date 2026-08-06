@@ -29,11 +29,20 @@ mkdir -p "${PIPELINE_ROOT}/tests" "${REPOSITORY_ROOT}/etc/system/base" \
   "${CANDIDATE_ROOT}" "${FINAL_ROOT}" \
   "${TOOLS_ROOT}" "${HOME_ROOT}" "${OUTPUT_ROOT}" "${PYTHON_GUARD_ROOT}"
 cp "${BUILD_IMAGE}" "${PLAN_SCRIPT}"
-cp "${ROOT_DIR}/containers/images/tests/validate-locks.sh" "${PIPELINE_ROOT}/tests/validate-locks.sh"
+cp "${ROOT_DIR}/containers/images/tests/validate-locks.sh" "${PIPELINE_ROOT}/tests/validate-locks.real.sh"
+cat >"${PIPELINE_ROOT}/tests/validate-locks.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+"${SCRIPT_DIR}/validate-locks.real.sh" "$@"
+if [[ -n "${VALIDATOR_SWAP_FROM:-}" && -n "${VALIDATOR_SWAP_TO:-}" ]]; then
+  mv "${VALIDATOR_SWAP_FROM}" "${VALIDATOR_SWAP_TO}"
+fi
+SH
 cp "${ROOT_DIR}/containers/images/targets.json" "${PIPELINE_ROOT}/targets.json"
 cp "${ROOT_DIR}/containers/images/sources-lock.json" "${PIPELINE_ROOT}/sources-template.json"
 cp "${ROOT_DIR}/etc/system/base/repos.yaml" "${REPOSITORY_ROOT}/etc/system/base/repos.yaml"
-chmod 0755 "${PLAN_SCRIPT}"
+chmod 0755 "${PLAN_SCRIPT}" "${PIPELINE_ROOT}/tests/validate-locks.sh"
 printf 'candidate sentinel\n' >"${CANDIDATE_ROOT}/sentinel.txt"
 printf 'final sentinel\n' >"${FINAL_ROOT}/sentinel.txt"
 : >"${TOOL_CALL_LOG}"
@@ -64,8 +73,127 @@ write_fixture() {
     "${STORE_ROOT}/root-1.0-${ROOT_HASH}" \
     "${STORE_ROOT}/runtime-1.0-${RUNTIME_HASH}" \
     "${STORE_ROOT}/build-only-1.0-${BUILD_HASH}"
-  SOURCES_PATH_OVERRIDE="${PIPELINE_ROOT}/sources-template.json" \
-    "${PIPELINE_ROOT}/tests/validate-locks.sh" --emit-synthetic-complete >"${PIPELINE_ROOT}/sources-lock.json"
+  "${PYTHON_BIN}" - "${PIPELINE_ROOT}/sources-template.json" "${PIPELINE_ROOT}/sources-lock.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+
+def digest(number):
+    return f"sha256:{number:064x}"
+
+snapshot = "https://snapshot.ubuntu.com/ubuntu/20260805T000000Z"
+source["status"] = "complete"
+source["resolved_on"] = "2026-08-05"
+source["unresolved"] = []
+verified = source["verified"]
+verified["nvidia_hpc_benchmarks_oci"] = {
+    "image": "nvcr.io/nvidia/hpc-benchmarks",
+    "tag": "26.02",
+    "index_digest": digest(1),
+    "platforms": {
+        "linux-x86_64-v4": {
+            "oci_platform": "linux/amd64",
+            "descriptor_digest": digest(2),
+            "config_digest": digest(3),
+        },
+        "linux-aarch64-gb300": {
+            "oci_platform": "linux/arm64",
+            "descriptor_digest": digest(4),
+            "config_digest": digest(5),
+        },
+    },
+    "resolved_on": "2026-08-05",
+}
+verified["ubuntu_snapshot"] = {
+    "release": "24.04",
+    "snapshot_url": snapshot,
+    "pockets": [{
+        "id": "noble",
+        "inrelease_url": f"{snapshot}/dists/noble/InRelease",
+        "inrelease_sha256": f"{10:064x}",
+        "package_indexes": [
+            {
+                "architecture": architecture,
+                "url": f"{snapshot}/dists/noble/main/binary-{architecture}/Packages.xz",
+                "sha256": f"{number:064x}",
+            }
+            for architecture, number in (("amd64", 11), ("arm64", 12))
+        ],
+    }],
+    "archive_key_fingerprint": "A" * 40,
+    "resolved_on": "2026-08-05",
+}
+verified["ubuntu_archive_key"] = {
+    "fingerprint": "A" * 40,
+    "source_url": "https://keyserver.ubuntu.com/pks/lookup?op=get&search=synthetic",
+    "key_sha256": f"{13:064x}",
+    "resolved_on": "2026-08-05",
+}
+
+def packages(name, first_hash):
+    return [
+        {
+            "name": name,
+            "version": "1.0",
+            "architecture": architecture,
+            "url": f"{snapshot}/pool/main/{name[0]}/{name}/{name}_1.0_{architecture}.deb",
+            "sha256": f"{first_hash + offset:064x}",
+        }
+        for offset, architecture in enumerate(("amd64", "arm64"))
+    ]
+
+verified["ubuntu_builder_packages"] = packages("builder", 20)
+verified["ubuntu_final_packages"] = packages("runtime", 30)
+tool_projects = {
+    "docker-buildx": ("https://github.com/docker/buildx", ("docker", "docker-buildx")),
+    "buildkit": ("https://github.com/moby/buildkit", ("buildctl",)),
+    "enroot": ("https://github.com/NVIDIA/enroot", ("enroot",)),
+    "squashfs-tools": (snapshot, ("mksquashfs", "unsquashfs")),
+    "zstd": (snapshot, ("zstd",)),
+    "syft": ("https://github.com/anchore/syft", ("syft",)),
+    "jq": ("https://github.com/jqlang/jq", ("jq",)),
+    "skopeo": ("https://github.com/containers/skopeo", ("skopeo",)),
+}
+verified["builder_tools"] = []
+for tool_offset, (identity, (prefix, binaries)) in enumerate(tool_projects.items(), start=40):
+    base_url = f"{prefix}/releases/download/v1.0/{identity}-1.0"
+    assets = {}
+    for arch_offset, architecture in enumerate(("x86_64", "aarch64")):
+        assets[architecture] = {
+            "url": f"{base_url}-{architecture}.tar.gz",
+            "sha256": f"{tool_offset + arch_offset:064x}",
+            "binaries": [
+                {
+                    "name": binary,
+                    "sha256": f"{tool_offset + arch_offset + binary_offset + 100:064x}",
+                }
+                for binary_offset, binary in enumerate(binaries)
+            ],
+        }
+    verified["builder_tools"].append({
+        "id": identity,
+        "version": "1.0",
+        "source_url": f"{base_url}-source.tar.gz",
+        "release_sha256": f"{tool_offset + 200:064x}",
+        "assets": assets,
+    })
+verified["actions_runner_archives"] = [
+    {
+        "id": identity,
+        "architecture": architecture,
+        "version": "1.0",
+        "url": f"https://github.com/actions/runner/releases/download/v1.0/actions-runner-{identity}-1.0.tar.gz",
+        "sha256": f"{300 + offset:064x}",
+    }
+    for offset, (identity, architecture) in enumerate((
+        ("linux-x64", "x64"),
+        ("linux-arm64", "arm64"),
+    ))
+]
+Path(sys.argv[2]).write_text(json.dumps(source), encoding="utf-8")
+PY
   "${PYTHON_BIN}" - "${PIPELINE_ROOT}/targets.json" "${PIPELINE_ROOT}/sources-lock.json" \
     "${RELEASE_DIR}" "${STORE_ROOT}" "${target}" "${arch}" \
     "${ROOT_HASH}" "${RUNTIME_HASH}" "${BUILD_HASH}" <<'PY'
@@ -138,9 +266,11 @@ invoke_plan() {
     HOME="${HOME_ROOT}" \
     LC_ALL=C \
     PATH="${TOOLS_ROOT}:/usr/bin:/bin" \
-    PYTHONPATH="${PYTHON_GUARD_ROOT}" \
-    TMPDIR="${TMP_BASE}" \
-    TOOL_CALL_LOG="${TOOL_CALL_LOG}" \
+      PYTHONPATH="${PYTHON_GUARD_ROOT}" \
+      TMPDIR="${TMP_BASE}" \
+      TOOL_CALL_LOG="${TOOL_CALL_LOG}" \
+      VALIDATOR_SWAP_FROM="${VALIDATOR_SWAP_FROM:-}" \
+      VALIDATOR_SWAP_TO="${VALIDATOR_SWAP_TO:-}" \
     "${PLAN_SCRIPT}" \
       --base "${base}" \
       --target "${target}" \
@@ -216,11 +346,44 @@ expect_failure() {
 }
 
 expect_success publication-pair "${PLAN_SCRIPT}" --self-test-publication
-grep -Fqx 'PASS: candidate artifact/checksum pair publication is no-clobber and rollback-safe' "${OUTPUT_ROOT}/publication-pair.out"
+grep -Fqx 'PASS: candidate artifact/checksum pair publication is no-clobber and crash-safe' "${OUTPUT_ROOT}/publication-pair.out"
+
+set +e
+SOURCES_PATH_OVERRIDE="${PIPELINE_ROOT}/sources-template.json" \
+  "${PIPELINE_ROOT}/tests/validate-locks.real.sh" --emit-synthetic-complete \
+  >"${OUTPUT_ROOT}/removed-synthetic-mode.out" 2>"${OUTPUT_ROOT}/removed-synthetic-mode.err"
+removed_mode_status=$?
+set -e
+if [[ "${removed_mode_status}" -eq 0 ]] || grep -Fq '"status":"complete"' "${OUTPUT_ROOT}/removed-synthetic-mode.out"; then
+  printf 'FAIL: source-lock validator still exports a synthetic complete production lock\n' >&2
+  exit 1
+fi
+printf 'PASS: source-lock validator exposes no synthetic complete-lock export mode\n'
 
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
 expect_success x86-plan invoke_plan linux-x86_64-v4
 grep -Fqx 'artifact:      nvidia-vlad+26.02-linux-x86_64-v4.sqsh' "${OUTPUT_ROOT}/x86-plan.out"
+
+write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
+cp "${PIPELINE_ROOT}/sources-lock.json" "${PIPELINE_ROOT}/replacement-lock.json"
+"${PYTHON_BIN}" - "${PIPELINE_ROOT}/replacement-lock.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+value["status"] = "blocked"
+value["unresolved"] = [{"category": "nvidia_hpc_benchmarks_oci"}]
+json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
+PY
+VALIDATOR_SWAP_FROM="${PIPELINE_ROOT}/replacement-lock.json"
+VALIDATOR_SWAP_TO="${PIPELINE_ROOT}/sources-lock.json"
+export VALIDATOR_SWAP_FROM VALIDATOR_SWAP_TO
+expect_failure descriptor-bound-lock 'source lock changed while it was being validated' invoke_plan linux-x86_64-v4
+unset VALIDATOR_SWAP_FROM VALIDATOR_SWAP_TO
+"${PYTHON_BIN}" - "${PIPELINE_ROOT}/sources-lock.json" <<'PY'
+import json, sys
+raise SystemExit(0 if json.load(open(sys.argv[1], encoding="utf-8"))["status"] == "blocked" else 1)
+PY
+printf 'PASS: plan rejected a source-lock pathname replacement after validation\n'
 
 write_fixture linux-aarch64-gb300 linux-ubuntu24.04-aarch64
 expect_success arm-plan invoke_plan linux-aarch64-gb300
@@ -282,6 +445,16 @@ value["concrete_specs"][root_hash]["dependencies"][0].pop("type")
 json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
 PY
 expect_failure malformed-dependency-edge 'dependency edge has no deptype' invoke_plan linux-x86_64-v4
+
+write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
+"${PYTHON_BIN}" - "${RELEASE_DIR}/spack.lock" "${ROOT_HASH}" <<'PY'
+import json, sys
+path, root_hash = sys.argv[1:]
+value = json.load(open(path, encoding="utf-8"))
+value["concrete_specs"][root_hash]["dependencies"][0].pop("hash")
+json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
+PY
+expect_failure missing-runtime-child 'runtime dependency edge has no valid child' invoke_plan linux-x86_64-v4
 
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
 mkdir -p "${CANDIDATE_ROOT}/linux-x86_64-v4/${IMAGE_ID}"

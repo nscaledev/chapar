@@ -846,10 +846,10 @@ from pathlib import Path
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 expected = {
-    "containers/images/preflight.sh": "248319d609db848238404430176fd3c9d0eea20d226f96ad22af228c62003845",
-    "containers/images/build-image.sh": "7e0486e7823c38516c5a7035ba0f383f00a1f5d58e9fd7b77db0d072dbf53f1d",
-    "containers/images/tests/validate-locks.sh": "6fd7ed2b9fe002f4084f0dc3afe385b1f972ab75c4c1a12a4ba5838f9e56a02f",
-    "containers/images/tests/preflight-test.sh": "24b81f8ed0aff94c51455ffa9e51ae33e6cb8d0b51a314bab54e3363b4beb219",
+    "containers/images/preflight.sh": "93b7342d2a6bd00c2e5f2111cffa743846c80c845dbb27a0edea8b56a67c188b",
+    "containers/images/build-image.sh": "a5e5e7b49bdbbb841a34508ba8bcc5c9df255142ee514112cb842c4479975501",
+    "containers/images/tests/validate-locks.sh": "fe743dbd9e9a7862109d887050f4a411bbf18917fe5b1d6d8df36c1c93bba7b2",
+    "containers/images/tests/preflight-test.sh": "99db8a48f142b1833fc480f4f0209e181029b143dc877dd0d6e50ee5d406a679",
     "ci/tests/vlad-image-provisioning-test.sh": "d98484412d3bd869e76501a8565238cdf94b7d793580a0e97c84e80a2e3a1260",
     "ci/install-vlad-image-site-contract.sh": "732358b74359d70c23ac2444ed9d8d0c62187110203c69811a384666968acbab",
     "ci/register-vlad-image-runner.sh": "e4d6751278fb1beaa5a38a72e98ac90afd5b733a264968068b8ae34f3068b770",
@@ -860,7 +860,7 @@ expected = {
     "envs/hpcsim/release.sh": "e866b0a25af62bb4626d3f677b0fa5bd0cd32dbc7f2f0ef2427f35d8b6a4b7d0",
     "envs/vlad/tests/target-policy-test.py": "eb5c1829499b63f309cecb78a7985e7a73df9d34097f5feae2203bed88d6fdb2",
     "envs/vlad/tests/target_policy_yaml.py": "da8f42e3f78070265a014a05b2ae078d4611397a05c0393b58a5687e2a676858",
-    "containers/images/tests/build-image-plan-test.sh": "50c7e583e8c1a9704e0796dc20b9d0eace95ce1bef144b05dda4dbe48f71946b",
+    "containers/images/tests/build-image-plan-test.sh": "fb85796b8f2cf156283d704e474c595da8de768704c2e8bca71197d23c4c936d",
     "ci/tests/no-direct-install-surface-test.py": "99e77a6248def13a944fce5490ad1b51101c3b1867ff5b00674cd9ca1a6f38c5",
     "ci/tests/no_direct_install_inputs.py": "3f84b748f5213199db3e037f6b824c7265ce867f2d7ba88fd9b6987de3ef1f19",
     "ci/tests/nscale-vlad-runbook-test.py": "9d6d6cbb5f66210678f8232e4cb27d8fa52a0955d298639dda03667c8ddd4973",
