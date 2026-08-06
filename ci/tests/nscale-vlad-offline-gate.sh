@@ -37,6 +37,7 @@ ALLOWLIST=(
     ci/tests/nscale-vlad-runbook-test.py
     ci/verify-vlad-source-approval.py
     containers/README.md
+    containers/images/build-image.sh
     containers/images/tests/build-image-plan-test.sh
     containers/images/tests/validate-locks.sh
     docs/buildcache.md
