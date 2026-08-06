@@ -288,7 +288,7 @@ expect_failure permissive-test-root "${PREFLIGHT}" "${BUILD_ARGS[@]}"
 chmod 0700 "${FIXTURE}"
 expect_failure bad-architecture env VLAD_PREFLIGHT_TEST_UNAME_M=aarch64 "${PREFLIGHT}" "${BUILD_ARGS[@]}"
 INVALID_NVIDIA_GENERIC_ARGS=("${BUILD_ARGS[@]}")
-INVALID_NVIDIA_GENERIC_ARGS[$((${#INVALID_NVIDIA_GENERIC_ARGS[@]} - 1))]=nvidia-vlad
+INVALID_NVIDIA_GENERIC_ARGS+=(--base nvidia-vlad)
 expect_failure invalid-nvidia-generic "${PREFLIGHT}" "${INVALID_NVIDIA_GENERIC_ARGS[@]}"
 INVALID_UBUNTU_V4_ARGS=("${BUILD_ARGS[@]}")
 INVALID_UBUNTU_V4_ARGS[1]=linux-x86_64-v4

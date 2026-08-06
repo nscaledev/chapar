@@ -849,7 +849,7 @@ expected = {
     "containers/images/preflight.sh": "248319d609db848238404430176fd3c9d0eea20d226f96ad22af228c62003845",
     "containers/images/build-image.sh": "7e0486e7823c38516c5a7035ba0f383f00a1f5d58e9fd7b77db0d072dbf53f1d",
     "containers/images/tests/validate-locks.sh": "6fd7ed2b9fe002f4084f0dc3afe385b1f972ab75c4c1a12a4ba5838f9e56a02f",
-    "containers/images/tests/preflight-test.sh": "ba7f694b90082d0062ef095b31dbf8735528807cff57b23a48c739989498ca93",
+    "containers/images/tests/preflight-test.sh": "24b81f8ed0aff94c51455ffa9e51ae33e6cb8d0b51a314bab54e3363b4beb219",
     "ci/tests/vlad-image-provisioning-test.sh": "d98484412d3bd869e76501a8565238cdf94b7d793580a0e97c84e80a2e3a1260",
     "ci/install-vlad-image-site-contract.sh": "732358b74359d70c23ac2444ed9d8d0c62187110203c69811a384666968acbab",
     "ci/register-vlad-image-runner.sh": "e4d6751278fb1beaa5a38a72e98ac90afd5b733a264968068b8ae34f3068b770",
