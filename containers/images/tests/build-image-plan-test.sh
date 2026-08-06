@@ -316,9 +316,45 @@ NONPLAN_BUILD_ROOT="${TMP_BASE}/nonplan-build"
 candidate_before="$(snapshot_tree "${CANDIDATE_ROOT}")"
 final_before="$(snapshot_tree "${FINAL_ROOT}")"
 : >"${TOOL_CALL_LOG}"
+artifact_path="${CANDIDATE_ROOT}/linux-x86_64-v4/${IMAGE_ID}/nvidia-vlad+26.02-linux-x86_64-v4.sqsh"
+checksum_path="${artifact_path}.sha256"
+printf 'retained artifact\n' >"${artifact_path}"
+printf 'retained checksum\n' >"${checksum_path}"
+set +e
+env -i \
+  HOME="${HOME_ROOT}" \
+  LC_ALL=C \
+  PATH="${TOOLS_ROOT}:/usr/bin:/bin" \
+  PYTHONPATH="${PYTHON_GUARD_ROOT}" \
+  TMPDIR="${TMP_BASE}" \
+  TOOL_CALL_LOG="${TOOL_CALL_LOG}" \
+  "${PLAN_SCRIPT}" \
+    --base nvidia-vlad \
+    --target linux-x86_64-v4 \
+    --release-dir "${RELEASE_DIR}" \
+    --image-id "${IMAGE_ID}" \
+    --candidate-root "${CANDIDATE_ROOT}" \
+    --enroot-build-root "${NONPLAN_BUILD_ROOT}" \
+    >"${OUTPUT_ROOT}/existing-output.out" 2>"${OUTPUT_ROOT}/existing-output.err"
+existing_status=$?
+set -e
+if [[ "${existing_status}" -eq 0 ]] || \
+   ! grep -Fq 'candidate output already exists' "${OUTPUT_ROOT}/existing-output.err" || \
+   [[ -s "${TOOL_CALL_LOG}" ]] || \
+   [[ "$(cat "${artifact_path}")" != 'retained artifact' ]] || \
+   [[ "$(cat "${checksum_path}")" != 'retained checksum' ]]; then
+  printf 'FAIL: existing candidate artifact/checksum were not preserved before tool execution\n' >&2
+  cat "${OUTPUT_ROOT}/existing-output.err" >&2
+  exit 1
+fi
+rm "${artifact_path}" "${checksum_path}"
+printf 'PASS: existing candidate artifact and checksum failed closed without clobbering\n'
+
+: >"${TOOL_CALL_LOG}"
 mkdir -p "${NONPLAN_BUILD_ROOT}/cache"
-ln -s "${CANDIDATE_ROOT}/sentinel.txt" \
-  "${NONPLAN_BUILD_ROOT}/cache/hpc-benchmarks+26.02-linux-x86_64-v4-sha256-$(printf '1%.0s' {1..64}).sqsh"
+untrusted_cache="${NONPLAN_BUILD_ROOT}/cache/hpc-benchmarks+26.02-linux-x86_64-v4-sha256-$(printf '1%.0s' {1..64}).sqsh"
+printf 'attacker-controlled-sqsh\n' >"${untrusted_cache}"
+chmod 0444 "${untrusted_cache}"
 set +e
 env -i \
   HOME="${HOME_ROOT}" \
@@ -338,14 +374,16 @@ env -i \
 cache_status=$?
 set -e
 if [[ "${cache_status}" -eq 0 ]] || \
-   ! grep -Fq 'base cache entry is not a trusted regular file' "${OUTPUT_ROOT}/untrusted-base-cache.err" || \
-   [[ -s "${TOOL_CALL_LOG}" ]]; then
-  printf 'FAIL: untrusted base cache was not rejected before tool execution\n' >&2
+   ! grep -Fq 'skopeo copy failed' "${OUTPUT_ROOT}/untrusted-base-cache.err" || \
+   ! grep -q '^skopeo' "${TOOL_CALL_LOG}" || \
+   grep -q $'^enroot\tcreate' "${TOOL_CALL_LOG}"; then
+  printf 'FAIL: untrusted base cache bytes were reused instead of refreshing the locked descriptor\n' >&2
   cat "${OUTPUT_ROOT}/untrusted-base-cache.err" >&2
   exit 1
 fi
-rm "${NONPLAN_BUILD_ROOT}/cache/hpc-benchmarks+26.02-linux-x86_64-v4-sha256-$(printf '1%.0s' {1..64}).sqsh"
-printf 'PASS: untrusted descriptor-bound base cache failed closed before tool execution\n'
+chmod 0600 "${untrusted_cache}"
+rm "${untrusted_cache}"
+printf 'PASS: preseeded regular cache bytes were ignored and the locked descriptor was refreshed\n'
 
 : >"${TOOL_CALL_LOG}"
 set +e

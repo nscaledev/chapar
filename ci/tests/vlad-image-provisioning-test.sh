@@ -89,14 +89,6 @@ for category in source["contract"]["required_categories"]:
 source["verified"]["nvidia_hpc_benchmarks_oci"] = {
     "index_digest": "sha256:" + "1" * 64,
     "platforms": {
-        "linux-x86_64-generic": {
-            "oci_platform": "linux/amd64",
-            "descriptor_digest": "sha256:" + "2" * 64,
-            "config_digest": "sha256:" + "3" * 64,
-        },
-        # Both x86 targets consume the single linux/amd64 descriptor of the
-        # 26.02 index, so they must name the same descriptor and config digests.
-        # This fixture is what pins that per-OCI-platform invariant.
         "linux-x86_64-v4": {
             "oci_platform": "linux/amd64",
             "descriptor_digest": "sha256:" + "2" * 64,

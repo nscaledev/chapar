@@ -552,6 +552,7 @@ assert_no_stale_gate_roots() {
 from __future__ import annotations
 
 import os
+import stat
 import sys
 
 
@@ -564,8 +565,31 @@ unexpected: list[str] = []
 with os.scandir(host_root) as stream:
     for entry in stream:
         path = os.path.join(host_root, entry.name)
-        if entry.name.startswith(prefixes) and path != allowed_root:
+        matching_prefix = next((prefix for prefix in prefixes if entry.name.startswith(prefix)), None)
+        if matching_prefix is None or path == allowed_root:
+            continue
+        try:
+            info = entry.stat(follow_symlinks=False)
+        except OSError:
             unexpected.append(path)
+            continue
+        suffix = entry.name[len(matching_prefix):]
+        owner_pid, separator, _token = suffix.partition(".")
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.getuid()
+            or not separator
+            or not owner_pid.isdecimal()
+            or int(owner_pid) <= 0
+        ):
+            unexpected.append(path)
+            continue
+        try:
+            os.kill(int(owner_pid), 0)
+        except ProcessLookupError:
+            unexpected.append(path)
+        except PermissionError:
+            pass
 if unexpected:
     raise SystemExit(f"offline gate failed: stale gate run-root residue: {sorted(unexpected)!r}")
 PY
@@ -573,9 +597,10 @@ PY
 
 create_active_run_root() {
     local label="$1"
-    local created_root identity run_root device inode status
+    local created_root identity run_root device inode status owner_pid
     umask 077
-    ACTIVE_RUN_ROOT="$(mktemp -d "${HOST_TEMP_ROOT}/${label}.XXXXXX")" || fail "setup error: could not create run root"
+    owner_pid="${BASHPID}"
+    ACTIVE_RUN_ROOT="$(mktemp -d "${HOST_TEMP_ROOT}/${label}.${owner_pid}.XXXXXX")" || fail "setup error: could not create run root"
     created_root="${ACTIVE_RUN_ROOT}"
     if [ "${OFFLINE_GATE_INTERNAL_SELF_TEST:-}" = 1 ] && [ "${OFFLINE_GATE_INTERNAL_INVALID_RUN_ROOT:-}" = 1 ]; then
         chmod 0755 "${created_root}"
@@ -783,10 +808,10 @@ root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 expected = {
     "containers/images/preflight.sh": "eccc4c77782bbb0ca49a598cb7df1c088b7a030905279c4ce958dfb37030d3c7",
-    "containers/images/build-image.sh": "2d73332c4564fb40a991b6e0431fac28d0018a92335fecc63520fd340e67ccb8",
-    "containers/images/tests/validate-locks.sh": "f513ea17c52c9fb15618f5b586a1f2e47fb1db83219d7809424b43de75e0972d",
-    "containers/images/tests/preflight-test.sh": "9e84a8a4e8e0e35985fe4f02e05e40e89e6cc68f5e6ab98c74c5898f937e2db2",
-    "ci/tests/vlad-image-provisioning-test.sh": "afd18ab68e34d99ecf498607e1a6092eac775c7c208f5e99e4289f53be0d1e54",
+    "containers/images/build-image.sh": "bde2745dbdc6226bca6df3d74a25df2b9ad8cc672d3ceaf57b9510498b6afd46",
+    "containers/images/tests/validate-locks.sh": "e544a92b18891313d4bdad7542ca306499a6af8e11a59b9414b0893ba2f32ed2",
+    "containers/images/tests/preflight-test.sh": "63953116d29516e9ff4d7283768f4e170d1a85a3dd4691d3f15509db644dc9cd",
+    "ci/tests/vlad-image-provisioning-test.sh": "d98484412d3bd869e76501a8565238cdf94b7d793580a0e97c84e80a2e3a1260",
     "ci/install-vlad-image-site-contract.sh": "732358b74359d70c23ac2444ed9d8d0c62187110203c69811a384666968acbab",
     "ci/register-vlad-image-runner.sh": "e4d6751278fb1beaa5a38a72e98ac90afd5b733a264968068b8ae34f3068b770",
     "ci/sbatch-env-build.sh": "7a9fa1659d6be1ee69ed4a918a9d99a54c0df91e6c8ce88d316444644e1390e2",
@@ -796,7 +821,7 @@ expected = {
     "envs/hpcsim/release.sh": "e866b0a25af62bb4626d3f677b0fa5bd0cd32dbc7f2f0ef2427f35d8b6a4b7d0",
     "envs/vlad/tests/target-policy-test.py": "eb5c1829499b63f309cecb78a7985e7a73df9d34097f5feae2203bed88d6fdb2",
     "envs/vlad/tests/target_policy_yaml.py": "da8f42e3f78070265a014a05b2ae078d4611397a05c0393b58a5687e2a676858",
-    "containers/images/tests/build-image-plan-test.sh": "4a22facb56faba474a2ea2009bcce347e4b25b78a110728d38b2de33f5cd9faa",
+    "containers/images/tests/build-image-plan-test.sh": "44c5cc4ffda11e16b10b58e82b47e870e2380453b74dcf9712eac57332cbf350",
     "ci/tests/no-direct-install-surface-test.py": "99e77a6248def13a944fce5490ad1b51101c3b1867ff5b00674cd9ca1a6f38c5",
     "ci/tests/no_direct_install_inputs.py": "3f84b748f5213199db3e037f6b824c7265ce867f2d7ba88fd9b6987de3ef1f19",
     "ci/tests/nscale-vlad-runbook-test.py": "9d6d6cbb5f66210678f8232e4cb27d8fa52a0955d298639dda03667c8ddd4973",
@@ -1627,6 +1652,28 @@ for signal_name, signal_value, expected_status in (
         process.kill()
         process.communicate()
         raise SystemExit(f"{signal_name} child exposed an unsafe run root: {run_root}")
+    probe = subprocess.run(
+        ["bash", str(script), "--internal-temp-root-probe"],
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if probe.returncode != 0 or not probe.stdout.startswith("RUN_ROOT="):
+        process.kill()
+        process.communicate()
+        raise SystemExit(
+            f"concurrent probe failed beside {signal_name} child: "
+            f"status={probe.returncode} stdout={probe.stdout!r} stderr={probe.stderr!r}"
+        )
+    probe_root = Path(probe.stdout.strip().removeprefix("RUN_ROOT="))
+    if os.path.lexists(probe_root):
+        process.kill()
+        process.communicate()
+        raise SystemExit(f"concurrent probe leaked exact run root: {probe_root}")
+    print(f"PASS: concurrent probe ran beside active {signal_name} child")
     os.kill(process.pid, signal_value)
     stdout, stderr = process.communicate(timeout=10)
     (output_root / f"{signal_name}.stdout").write_text(line + "\n" + stdout, encoding="utf-8")

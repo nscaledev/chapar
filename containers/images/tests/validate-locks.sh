@@ -48,7 +48,7 @@ oci_bases: Final = {
     "nvidia_hpc_benchmarks_oci": {
         "image": "nvcr.io/nvidia/hpc-benchmarks",
         "tag": "26.02",
-        "targets": ("linux-x86_64-generic", "linux-x86_64-v4", "linux-aarch64-gb300"),
+        "targets": ("linux-x86_64-v4", "linux-aarch64-gb300"),
     },
     "ubuntu_base_oci": {
         "image": "ubuntu",
@@ -233,16 +233,10 @@ def make_oci_validator(category: str):
             raise ValueError(f"{label} index digest is not immutable")
         iso_date(oci["resolved_on"], f"{label} resolved_on")
         platforms = exact_object(oci["platforms"], set(allowed_targets), f"{label} platforms")
-        # Chapar targets map many-to-one onto the base image's OCI platforms:
-        # linux-x86_64-generic and linux-x86_64-v4 both consume the single
-        # linux/amd64 descriptor of a base's index and differ only in the
-        # Spack tree layered on top (when a base supports both -- ubuntu_base
-        # currently supports only the generic target). So the invariant is
-        # the one the contract's oci_chain_rule actually states -- exactly
-        # one descriptor per approved OCI platform -- rather than one per
-        # target: every target on a platform must name that platform's
-        # descriptor, and two distinct platforms must never resolve to the
-        # same descriptor.
+        # The validator supports multiple Chapar targets mapping to one OCI
+        # platform when a selected base actually carries both. In that case
+        # every target must name the one descriptor/config chain from the
+        # base's index. Distinct OCI platforms must never share a descriptor.
         chains: dict[str, tuple[str, str]] = {}
         for target_name, expected_target in allowed_targets.items():
             platform = exact_object(platforms[target_name], {"oci_platform", "descriptor_digest", "config_digest"}, f"{label} platform {target_name}")
@@ -529,7 +523,6 @@ def synthetic_complete_sources(template: dict[str, object]) -> dict[str, object]
         "tag": "26.02",
         "index_digest": digest(1),
         "platforms": {
-            "linux-x86_64-generic": {"oci_platform": "linux/amd64", "descriptor_digest": digest(2), "config_digest": digest(3)},
             "linux-x86_64-v4": {"oci_platform": "linux/amd64", "descriptor_digest": digest(2), "config_digest": digest(3)},
             "linux-aarch64-gb300": {"oci_platform": "linux/arm64", "descriptor_digest": digest(4), "config_digest": digest(5)},
         },
@@ -639,15 +632,9 @@ if mode == "--self-test":
     wrong_platform = copy.deepcopy(complete)
     wrong_platform["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-x86_64-v4"]["oci_platform"] = "linux/arm64"
     invalid_cases.append(("wrong OCI platform", wrong_platform, False))
-    divergent_descriptor = copy.deepcopy(complete)
-    divergent_descriptor["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-x86_64-v4"]["descriptor_digest"] = f"sha256:{400:064x}"
-    invalid_cases.append(("divergent same-platform descriptors", divergent_descriptor, False))
     reused_descriptor = copy.deepcopy(complete)
     reused_descriptor["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-aarch64-gb300"]["descriptor_digest"] = f"sha256:{2:064x}"
     invalid_cases.append(("cross-platform descriptor reuse", reused_descriptor, False))
-    divergent_config = copy.deepcopy(complete)
-    divergent_config["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-x86_64-v4"]["config_digest"] = f"sha256:{401:064x}"
-    invalid_cases.append(("descriptor/config chain mismatch", divergent_config, False))
     malformed_config = copy.deepcopy(complete)
     malformed_config["verified"]["nvidia_hpc_benchmarks_oci"]["platforms"]["linux-aarch64-gb300"]["config_digest"] = "sha256:not-a-digest"
     invalid_cases.append(("malformed config digest", malformed_config, False))
@@ -674,7 +661,7 @@ if mode == "--self-test":
     else:
         raise AssertionError("duplicate JSON key fixture was accepted")
     print("self-test case: rejected duplicate JSON keys")
-    print("self-test: accepted synthetic complete lock with shared linux/amd64 and distinct linux/arm64 OCI chains")
+    print("self-test: accepted synthetic complete lock with the selected base target matrix")
 
 print("base category | target | OCI platform | index digest | platform descriptor | config digest")
 for category, base in oci_bases.items():

@@ -57,13 +57,6 @@ source["verified"]["nvidia_hpc_benchmarks_oci"] = {
     "tag": "26.02",
     "index_digest": "sha256:" + "1" * 64,
     "platforms": {
-        "linux-x86_64-generic": {
-            "oci_platform": "linux/amd64",
-            "descriptor_digest": "sha256:" + "2" * 64,
-            "config_digest": "sha256:" + "3" * 64,
-        },
-        # Shares the single linux/amd64 descriptor with linux-x86_64-generic:
-        # the two x86 targets differ only in the Spack tree layered on top.
         "linux-x86_64-v4": {
             "oci_platform": "linux/amd64",
             "descriptor_digest": "sha256:" + "2" * 64,

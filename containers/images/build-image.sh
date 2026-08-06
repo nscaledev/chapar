@@ -216,52 +216,43 @@ def resolve_base_descriptor(base: dict[str, str], target: str) -> str:
     return descriptor
 
 
-def import_base(base: dict[str, str], descriptor: str, cache_dir: Path, target: str) -> Path:
-    """Import the digest-pinned base into a descriptor-bound local cache.
+def import_base(base: dict[str, str], descriptor: str, import_dir: Path) -> Path:
+    """Import the digest-pinned base into a one-use local SQSH.
 
     skopeo copies by digest into an OCI archive first, then enroot imports that
     archive. Going through skopeo keeps the digest exact and avoids depending on
-    enroot's registry URI supporting `@sha256:` forms.
+    enroot's registry URI supporting `@sha256:` forms. The result is never
+    reused: an OCI descriptor authenticates registry content, not arbitrary
+    bytes stored under a descriptor-shaped local filename.
     """
-    slug = base["image"].rsplit("/", 1)[-1]
-    descriptor_key = descriptor.replace(":", "-")
-    out = cache_dir / f"{slug}+{base['tag']}-{target}-{descriptor_key}.sqsh"
-    prepare_owned_directory(cache_dir, "base cache directory")
-    try:
-        cached = out.lstat()
-    except FileNotFoundError:
-        cached = None
-    if cached is not None:
-        if (
-            not stat.S_ISREG(cached.st_mode)
-            or cached.st_uid != os.geteuid()
-            or stat.S_IMODE(cached.st_mode) != 0o444
-            or cached.st_nlink != 1
-        ):
-            fail(f"base cache entry is not a trusted regular file: {out}")
-        print(f"==> base already imported: {out.name}")
-        return out
+    out = import_dir / "base.sqsh"
     skopeo = require_tool("skopeo")
     enroot = require_tool("enroot")
-    partial = out.with_suffix(f".sqsh.partial.{os.getpid()}")
-    archive = cache_dir / f".oci-archive.{os.getpid()}.tar"
-    for stale in (partial, archive):
-        stale.unlink(missing_ok=True)
+    archive = import_dir / "base-oci.tar"
     print(f"==> copying {base['image']}@{descriptor}")
     run([skopeo, "copy", f"docker://{base['image']}@{descriptor}", f"oci-archive:{archive}"], "skopeo copy")
     print("==> importing base into enroot")
-    run([enroot, "import", "-o", str(partial), f"oci-archive://{archive}"], "enroot import")
+    run([enroot, "import", "-o", str(out), f"oci-archive://{archive}"], "enroot import")
     archive.unlink(missing_ok=True)
-    imported = partial.lstat()
+    imported = out.lstat()
     if not stat.S_ISREG(imported.st_mode) or imported.st_uid != os.geteuid() or imported.st_nlink != 1:
-        fail("enroot produced an untrusted base cache entry")
-    partial.chmod(0o444)
-    try:
-        os.link(partial, out, follow_symlinks=False)
-    except FileExistsError:
-        raise BuildError(f"base cache entry appeared during import: {out}") from None
-    partial.unlink()
+        fail("enroot produced an untrusted base import")
+    out.chmod(0o400)
     return out
+
+
+def publish_no_clobber(source: Path, destination: Path, label: str) -> None:
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+        fail(f"{label} source is not a trusted regular file: {source}")
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except FileExistsError:
+        raise BuildError(f"{label} already exists: {destination}") from None
+    published = destination.lstat()
+    if (published.st_dev, published.st_ino) != (info.st_dev, info.st_ino):
+        fail(f"{label} publication identity changed: {destination}")
+    source.unlink()
 
 
 # ------------------------------------------------------------ release closure --
@@ -531,6 +522,14 @@ def main() -> int:
     work = candidate_root / args.target / args.image_id
     if not work.is_dir():
         fail(f"target/image-qualified candidate work root must exist and be writable: {work}")
+    out = work / artifact_name
+    checksum = work / f"{artifact_name}.sha256"
+    for candidate_output in (out, checksum):
+        try:
+            candidate_output.lstat()
+        except FileNotFoundError:
+            continue
+        fail(f"candidate output already exists: {candidate_output}")
 
     enroot = require_tool("enroot")
     build_root = absolute(args.enroot_build_root, "enroot build root") if args.enroot_build_root else work / ".enroot-build"
@@ -542,25 +541,42 @@ def main() -> int:
     os.environ["ENROOT_TEMP_PATH"] = str(build_root / "temp")
     os.environ["ENROOT_RUNTIME_PATH"] = str(build_root / "runtime")
 
-    base_sqsh = import_base(base, descriptor, build_root / "cache", args.target)
     container = f"chaparbuild-{args.base}-{args.target}-{os.getpid()}"
     subprocess.run([enroot, "remove", "-f", container], capture_output=True, check=False)
-    run([enroot, "create", "--name", container, str(base_sqsh)], "enroot create")
+    with tempfile.TemporaryDirectory(prefix="base-import.", dir=build_root / "temp") as import_raw:
+        base_sqsh = import_base(base, descriptor, Path(import_raw))
+        run([enroot, "create", "--name", container, str(base_sqsh)], "enroot create")
     try:
         inject(build_root / "data", container, prefixes, release_dir, arch, base)
         verify(enroot, container, arch, target_spec["spack_target"], args.base)
-        out = work / artifact_name
         partial = out.with_suffix(f".sqsh.partial.{os.getpid()}")
+        checksum_partial: Path | None = None
         partial.unlink(missing_ok=True)
-        print(f"==> exporting {out}")
-        run([enroot, "export", "-o", str(partial), container], "enroot export")
-        partial.replace(out)
+        try:
+            print(f"==> exporting {out}")
+            run([enroot, "export", "-o", str(partial), container], "enroot export")
+            exported = partial.lstat()
+            if not stat.S_ISREG(exported.st_mode) or exported.st_uid != os.geteuid() or exported.st_nlink != 1:
+                fail("enroot produced an untrusted candidate artifact")
+            partial.chmod(0o444)
+            digest = run(["sha256sum", str(partial)], "hashing artifact").split()[0]
+            checksum_fd, checksum_raw = tempfile.mkstemp(prefix=f".{artifact_name}.sha256.partial.", dir=work)
+            checksum_partial = Path(checksum_raw)
+            with os.fdopen(checksum_fd, "w", encoding="utf-8") as stream:
+                stream.write(f"{digest}  {artifact_name}\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            checksum_partial.chmod(0o444)
+            publish_no_clobber(partial, out, "candidate artifact")
+            publish_no_clobber(checksum_partial, checksum, "candidate checksum")
+        finally:
+            partial.unlink(missing_ok=True)
+            if checksum_partial is not None:
+                checksum_partial.unlink(missing_ok=True)
     finally:
         if not args.keep_container:
             subprocess.run([enroot, "remove", "-f", container], capture_output=True, check=False)
 
-    digest = run(["sha256sum", str(out)], "hashing artifact").split()[0]
-    (work / f"{artifact_name}.sha256").write_text(f"{digest}  {artifact_name}\n", encoding="utf-8")
     print(f"==> {artifact_name}")
     print(f"    sha256 {digest}")
     print(f"    seal with the publisher role, then consume via srun --container-image=<sealed path>")
