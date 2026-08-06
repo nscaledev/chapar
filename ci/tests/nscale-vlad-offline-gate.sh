@@ -35,10 +35,12 @@ ALLOWLIST=(
     ci/tests/no_direct_install_inputs.py
     ci/tests/nscale-vlad-offline-gate.sh
     ci/tests/nscale-vlad-runbook-test.py
+    ci/tests/vlad-image-provisioning-test.sh
     ci/verify-vlad-source-approval.py
     containers/README.md
     containers/images/build-image.sh
     containers/images/tests/build-image-plan-test.sh
+    containers/images/tests/preflight-test.sh
     containers/images/tests/validate-locks.sh
     docs/buildcache.md
     docs/ci-github-actions.md
