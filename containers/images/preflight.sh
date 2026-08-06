@@ -77,12 +77,17 @@ BUILD_TOOLS: Final = {
     "linux-x86_64-v4": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
     "linux-aarch64-gb300": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
 }
-# Which locked OCI category and registry image each selected container's base
-# comes from. Kept in sync with containers/images/build-image.sh's BASES dict;
-# preflight only needs the two fields it probes with here.
 BASES: Final = {
-    "nvidia-vlad": {"lock_category": "nvidia_hpc_benchmarks_oci", "image": "nvcr.io/nvidia/hpc-benchmarks"},
-    "ubuntu-hpcsim": {"lock_category": "ubuntu_base_oci", "image": "ubuntu"},
+    "nvidia-vlad": {
+        "lock_category": "nvidia_hpc_benchmarks_oci",
+        "image": "nvcr.io/nvidia/hpc-benchmarks",
+        "targets": ("linux-x86_64-v4", "linux-aarch64-gb300"),
+    },
+    "ubuntu-hpcsim": {
+        "lock_category": "ubuntu_base_oci",
+        "image": "ubuntu",
+        "targets": ("linux-x86_64-generic",),
+    },
 }
 ROLE_BY_MODE: Final = {"build": "builders", "runtime": "validators", "publisher": "publishers"}
 RUNTIME_FEATURES: Final = {
@@ -621,6 +626,11 @@ def main() -> int:
             fail("unknown preflight test override: " + ",".join(unknown_test_variables))
     if not ID_RE.fullmatch(args.image_id):
         fail("image ID must be a lowercase simple identifier")
+    if args.target not in BASES[args.base]["targets"]:
+        fail(
+            f"base {args.base!r} does not support target {args.target!r}; "
+            f"it supports: {', '.join(BASES[args.base]['targets'])}"
+        )
     if args.sha256 is not None and SHA256_RE.fullmatch(args.sha256) is None:
         fail("--sha256 must be a full lowercase SHA-256")
     if args.mode in {"runtime", "publisher"} and args.sha256 is None:
@@ -697,6 +707,29 @@ def main() -> int:
     if not inventory_has_pair(inventory, target_contract["partition"], target_contract["constraint"]):
         fail("validated target partition/constraint pair is absent from live Slurm inventory")
 
+    runtime: dict[str, Any] | None = None
+    diagnostics: dict[str, Any] = {}
+    if args.mode == "runtime":
+        loaded_runtime = inventory.get("runtime")
+        if not isinstance(loaded_runtime, dict):
+            fail("live inventory does not contain runtime capability data")
+        runtime = loaded_runtime
+        for key in RUNTIME_DIAGNOSTICS[args.target]:
+            value = runtime.get(key)
+            if not isinstance(value, (str, list)) or value in ("", []):
+                fail(f"live runtime inventory is missing diagnostic: {key}")
+            if isinstance(value, list) and not all(isinstance(item, str) and item for item in value):
+                fail(f"live runtime inventory diagnostic is malformed: {key}")
+            diagnostics[key] = value
+        expected_isa = X86_ISA_LEVEL.get(args.target)
+        if expected_isa is not None and (
+            diagnostics["cpuid_isa_level"] != expected_isa or diagnostics["elf_isa_level"] != expected_isa
+        ):
+            fail(f"{args.target} runtime requires physical CPUID and ELF {expected_isa} evidence")
+        missing = [feature for feature in RUNTIME_FEATURES[args.target] if runtime.get(feature) is not True]
+        if missing:
+            raise OptionalRuntimeFeatureMissing("absent declared runtime hardware/features: " + ",".join(missing))
+
     qualified_candidate = paths["candidate_root"] / args.target / args.image_id
     selected_image_root = paths["image_root"] / args.target
     capabilities: dict[str, Any] = {}
@@ -727,25 +760,6 @@ def main() -> int:
         require_directory(sealed_candidate, "SHA-qualified sealed candidate", writable=False)
         require_directory(receipt_root, "run-scoped receipt root", writable=True)
         require_nfs(sealed_candidate, test_mode, test_root, timeout_seconds)
-        runtime = inventory.get("runtime")
-        if not isinstance(runtime, dict):
-            fail("live inventory does not contain runtime capability data")
-        diagnostics: dict[str, Any] = {}
-        for key in RUNTIME_DIAGNOSTICS[args.target]:
-            value = runtime.get(key)
-            if not isinstance(value, (str, list)) or value in ("", []):
-                fail(f"live runtime inventory is missing diagnostic: {key}")
-            if isinstance(value, list) and not all(isinstance(item, str) and item for item in value):
-                fail(f"live runtime inventory diagnostic is malformed: {key}")
-            diagnostics[key] = value
-        expected_isa = X86_ISA_LEVEL.get(args.target)
-        if expected_isa is not None and (
-            diagnostics["cpuid_isa_level"] != expected_isa or diagnostics["elf_isa_level"] != expected_isa
-        ):
-            fail(f"{args.target} runtime requires physical CPUID and ELF {expected_isa} evidence")
-        missing = [feature for feature in RUNTIME_FEATURES[args.target] if runtime.get(feature) is not True]
-        if missing:
-            raise OptionalRuntimeFeatureMissing("absent declared runtime hardware/features: " + ",".join(missing))
         capabilities = {
             "required_tools": sorted(tools),
             "runtime_features": sorted(RUNTIME_FEATURES[args.target]),

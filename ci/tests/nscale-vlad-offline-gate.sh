@@ -87,6 +87,7 @@ HOST_TEMP_ROOT=""
 ACTIVE_RUN_ROOT=""
 ACTIVE_RUN_DEVICE=""
 ACTIVE_RUN_INODE=""
+ACTIVE_RUN_LOCK_FD=""
 
 fail() {
     printf 'offline gate failed: %s\n' "$*" >&2
@@ -519,6 +520,10 @@ cleanup_active_run_root() {
     local device="${ACTIVE_RUN_DEVICE}"
     local inode="${ACTIVE_RUN_INODE}"
     [ -n "${run_root}" ] || return 0
+    if [ -n "${ACTIVE_RUN_LOCK_FD}" ]; then
+        exec {ACTIVE_RUN_LOCK_FD}>&-
+        ACTIVE_RUN_LOCK_FD=""
+    fi
     remove_exact_run_root "${run_root}" "${device}" "${inode}" || return
     clear_active_run_root_state
 }
@@ -553,6 +558,7 @@ assert_no_stale_gate_roots() {
         "${host_root}" "${allowed_root}" "${GATE_RUN_PREFIXES[@]}" <<'PY'
 from __future__ import annotations
 
+import fcntl
 import os
 import stat
 import sys
@@ -586,12 +592,33 @@ with os.scandir(host_root) as stream:
         ):
             unexpected.append(path)
             continue
+        lock_path = os.path.join(path, ".owner-lock")
         try:
-            os.kill(int(owner_pid), 0)
-        except ProcessLookupError:
+            lock_info = os.lstat(lock_path)
+            if (
+                not stat.S_ISREG(lock_info.st_mode)
+                or lock_info.st_uid != os.getuid()
+                or stat.S_IMODE(lock_info.st_mode) != 0o600
+                or lock_info.st_nlink != 1
+            ):
+                unexpected.append(path)
+                continue
+            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except OSError:
             unexpected.append(path)
-        except PermissionError:
-            pass
+            continue
+        try:
+            opened = os.fstat(lock_fd)
+            if (opened.st_dev, opened.st_ino) != (lock_info.st_dev, lock_info.st_ino):
+                unexpected.append(path)
+                continue
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            unexpected.append(path)
+        finally:
+            os.close(lock_fd)
 if unexpected:
     raise SystemExit(f"offline gate failed: stale gate run-root residue: {sorted(unexpected)!r}")
 PY
@@ -628,6 +655,15 @@ create_active_run_root() {
     trap 'cleanup_on_signal HUP 129' HUP
     trap 'cleanup_on_signal INT 130' INT
     trap 'cleanup_on_signal TERM 143' TERM
+    : >"${ACTIVE_RUN_ROOT}/.owner-lock" || fail "setup error: could not create run-root owner lock"
+    chmod 0600 "${ACTIVE_RUN_ROOT}/.owner-lock" || fail "setup error: could not protect run-root owner lock"
+    exec {ACTIVE_RUN_LOCK_FD}>"${ACTIVE_RUN_ROOT}/.owner-lock" || fail "setup error: could not open run-root owner lock"
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" - "${ACTIVE_RUN_LOCK_FD}" <<'PY'
+import fcntl
+import sys
+
+fcntl.flock(int(sys.argv[1]), fcntl.LOCK_EX | fcntl.LOCK_NB)
+PY
     assert_no_stale_gate_roots "${HOST_TEMP_ROOT}" "${ACTIVE_RUN_ROOT}"
 }
 
@@ -809,10 +845,10 @@ from pathlib import Path
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 expected = {
-    "containers/images/preflight.sh": "eccc4c77782bbb0ca49a598cb7df1c088b7a030905279c4ce958dfb37030d3c7",
-    "containers/images/build-image.sh": "bde2745dbdc6226bca6df3d74a25df2b9ad8cc672d3ceaf57b9510498b6afd46",
-    "containers/images/tests/validate-locks.sh": "e544a92b18891313d4bdad7542ca306499a6af8e11a59b9414b0893ba2f32ed2",
-    "containers/images/tests/preflight-test.sh": "63953116d29516e9ff4d7283768f4e170d1a85a3dd4691d3f15509db644dc9cd",
+    "containers/images/preflight.sh": "248319d609db848238404430176fd3c9d0eea20d226f96ad22af228c62003845",
+    "containers/images/build-image.sh": "7e0486e7823c38516c5a7035ba0f383f00a1f5d58e9fd7b77db0d072dbf53f1d",
+    "containers/images/tests/validate-locks.sh": "6fd7ed2b9fe002f4084f0dc3afe385b1f972ab75c4c1a12a4ba5838f9e56a02f",
+    "containers/images/tests/preflight-test.sh": "ba7f694b90082d0062ef095b31dbf8735528807cff57b23a48c739989498ca93",
     "ci/tests/vlad-image-provisioning-test.sh": "d98484412d3bd869e76501a8565238cdf94b7d793580a0e97c84e80a2e3a1260",
     "ci/install-vlad-image-site-contract.sh": "732358b74359d70c23ac2444ed9d8d0c62187110203c69811a384666968acbab",
     "ci/register-vlad-image-runner.sh": "e4d6751278fb1beaa5a38a72e98ac90afd5b733a264968068b8ae34f3068b770",
@@ -823,11 +859,11 @@ expected = {
     "envs/hpcsim/release.sh": "e866b0a25af62bb4626d3f677b0fa5bd0cd32dbc7f2f0ef2427f35d8b6a4b7d0",
     "envs/vlad/tests/target-policy-test.py": "eb5c1829499b63f309cecb78a7985e7a73df9d34097f5feae2203bed88d6fdb2",
     "envs/vlad/tests/target_policy_yaml.py": "da8f42e3f78070265a014a05b2ae078d4611397a05c0393b58a5687e2a676858",
-    "containers/images/tests/build-image-plan-test.sh": "44c5cc4ffda11e16b10b58e82b47e870e2380453b74dcf9712eac57332cbf350",
+    "containers/images/tests/build-image-plan-test.sh": "50c7e583e8c1a9704e0796dc20b9d0eace95ce1bef144b05dda4dbe48f71946b",
     "ci/tests/no-direct-install-surface-test.py": "99e77a6248def13a944fce5490ad1b51101c3b1867ff5b00674cd9ca1a6f38c5",
     "ci/tests/no_direct_install_inputs.py": "3f84b748f5213199db3e037f6b824c7265ce867f2d7ba88fd9b6987de3ef1f19",
     "ci/tests/nscale-vlad-runbook-test.py": "9d6d6cbb5f66210678f8232e4cb27d8fa52a0955d298639dda03667c8ddd4973",
-    "ci/verify-vlad-source-approval.py": "dbdecb13726ee0287d83986666bc199725b7cc6e7191d66f875116256d6ad090",
+    "ci/verify-vlad-source-approval.py": "91fb84f2b09a427d3a62aa42e0afad1744dcf12d5c035aa762a0a23828757b52",
     "ci/install-validated-sqsh.py": "e2163e20271724fd09e65563d9e9508cdff7673473e1bfc1fcb15d480b194ef6",
     "ci/validated_sqsh_installer.py": "6e0004106b6d9164fd2bbf690841a3a7210ad41fdda2f88d02bfc5458ef55612",
     "ci/validated_sqsh_installer_selftest.py": "58c30e89485f7542327e20bcacd279e24b2ea786633200f2fa5a4af53b601d87",
@@ -1516,6 +1552,7 @@ self_test_gate_root_inventory() {
     local host="${temp}/gate-root-inventory-host"
     local allowed="${host}/nscale-offline-self-test.allowed"
     local stale="${host}/nscale-scope.missed-prefix"
+    local spoofed_live="${host}/nscale-scope.${BASHPID}.spoofed-live-pid"
     local output status
     mkdir -p "${allowed}" "${stale}"
     chmod 0700 "${host}" "${allowed}" "${stale}"
@@ -1528,8 +1565,20 @@ self_test_gate_root_inventory() {
     [ -d "${allowed}" ] && [ ! -L "${allowed}" ] && [ -d "${stale}" ] && [ ! -L "${stale}" ] || \
         fail "gate-root inventory modified residue while rejecting it"
     rmdir "${stale}"
+    mkdir "${spoofed_live}"
+    chmod 0700 "${spoofed_live}"
+    : >"${spoofed_live}/.owner-lock"
+    chmod 0600 "${spoofed_live}/.owner-lock"
+    set +e
+    output="$(assert_no_stale_gate_roots "${host}" "${allowed}" 2>&1)"
+    status=$?
+    set -e
+    [ "${status}" -ne 0 ] && [[ "${output}" == *"stale gate run-root residue"* ]] && [[ "${output}" == *"spoofed-live-pid"* ]] || \
+        fail "gate-root inventory accepted an unlocked stale root that named a live PID"
+    rm "${spoofed_live}/.owner-lock"
+    rmdir "${spoofed_live}"
     assert_no_stale_gate_roots "${host}" "${allowed}"
-    printf 'PASS: gate-root inventory covers every owned prefix and fails without deleting residue\n'
+    printf 'PASS: gate-root inventory requires a held owner lock and fails without deleting residue\n'
 }
 
 self_test_invalid_run_root_cleanup() {

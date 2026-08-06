@@ -71,6 +71,14 @@ class FileBytes:
 
 
 @dataclass(frozen=True, slots=True)
+class FileDigest:
+    sha256: Sha256
+    size: int
+    uid: int
+    mode: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReleaseInputs:
     output: str
     release_dir: str
@@ -161,9 +169,30 @@ def stable_bytes_fd(fd: int, label: str) -> FileBytes:
     return FileBytes(b"".join(chunks), Sha256(digest.hexdigest()), before.st_size, before.st_uid, stat.S_IMODE(before.st_mode))
 
 
+def stable_digest_fd(fd: int, label: str) -> FileDigest:
+    before = os.fstat(fd)
+    require(stat.S_ISREG(before.st_mode), f"{label} is not a regular file")
+    os.lseek(fd, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    while chunk := os.read(fd, CHUNK):
+        digest.update(chunk)
+    after = os.fstat(fd)
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    require(identity(before) == identity(after), f"{label} changed while open")
+    return FileDigest(Sha256(digest.hexdigest()), before.st_size, before.st_uid, stat.S_IMODE(before.st_mode))
+
+
 def read_file(raw: str, label: str, required_mode: int | None = None) -> FileBytes:
     with opened_path(raw) as fd:
         result = stable_bytes_fd(fd, label)
+    if required_mode is not None:
+        require(result.mode == required_mode, f"{label} mode must be {required_mode:04o}")
+    return result
+
+
+def digest_file(raw: str, label: str, required_mode: int | None = None) -> FileDigest:
+    with opened_path(raw) as fd:
+        result = stable_digest_fd(fd, label)
     if required_mode is not None:
         require(result.mode == required_mode, f"{label} mode must be {required_mode:04o}")
     return result
@@ -316,7 +345,7 @@ def validate_builder(data: JsonMap, expected_commit: str | None = None) -> None:
     require(expect_string(release_json, "target") == target, "release and builder targets differ")
     require_identifier(expect_string(data, "image_id"), "image_id")
     image_path = canonical_absolute(expect_string(data, "image_path"), "image path")
-    image = read_file(image_path, "builder image")
+    image = digest_file(image_path, "builder image")
     require(image.sha256 == require_sha(expect_string(data, "image_sha256"), "image digest"), "builder image digest mismatch")
     require(image.size == expect_integer(data, "image_size"), "builder image size mismatch")
     require(image.mode == 0o444, "builder image is not sealed mode 0444")
@@ -331,7 +360,7 @@ def builder_data(args: argparse.Namespace) -> JsonMap:
     validate_release(release_json)
     build_root = canonical_absolute(args.build_root, "build root")
     require(expect_string(release_json, "spack_lock_path") == f"{build_root}/envs/vlad/spack.lock", "build root does not bind release")
-    image = read_file(args.image, "builder image")
+    image = digest_file(args.image, "builder image")
     require(image.sha256 == require_sha(args.image_sha256, "image digest"), "builder image digest mismatch")
     require(image.size == args.image_size and args.image_size > 0, "builder image size mismatch")
     require(image.mode == 0o444, "builder image is not sealed mode 0444")
@@ -366,7 +395,7 @@ def runtime_data(args: argparse.Namespace) -> JsonMap:
     image_path = canonical_absolute(args.image, "runtime image")
     expected_parent = f"{validator_image_root}/{target}/{expect_string(builder_json, 'image_id')}/{image_sha}"
     require(os.path.dirname(image_path) == expected_parent, "runtime image is outside validator custody")
-    image = read_file(image_path, "runtime image")
+    image = digest_file(image_path, "runtime image")
     require(image.sha256 == image_sha and image.size == expect_integer(builder_json, "image_size"), "runtime image bytes differ from builder")
     output = canonical_absolute(args.output, "runtime receipt path")
     preflight = read_file(args.preflight, "runtime preflight")
@@ -400,7 +429,7 @@ def validate_runtime(data: JsonMap, args: argparse.Namespace) -> None:
     validator_image_root = canonical_absolute(expect_string(data, "validator_image_root"), "validator image root")
     expected_parent = f"{validator_image_root}/{target}/{expect_string(builder_json, 'image_id')}/{image_sha}"
     require(os.path.dirname(image_path) == expected_parent, "runtime image custody path mismatch")
-    image = read_file(image_path, "runtime image")
+    image = digest_file(image_path, "runtime image")
     require(image.sha256 == image_sha and image.size == expect_integer(builder_json, "image_size"), "runtime image content drift")
     receipt_root = os.path.dirname(canonical_absolute(args.runtime_receipt, "runtime receipt"))
     require(canonical_absolute(expect_string(data, "validator_root"), "validator root") + f"/{target}/{expect_string(builder_json, 'image_id')}/{image_sha}" == receipt_root, "runtime validator root mismatch")
@@ -598,6 +627,19 @@ def self_test() -> None:
         cases.append(expect_child_failure("receipt-o-excl-collision", lambda: write_exclusive_json(str(output), data), "File exists"))
         require(read_file(str(output), "self-test receipt", 0o444).sha256 == hashlib.sha256(output.read_bytes()).hexdigest(), "self-test receipt digest drift")
         require(digest == hashlib.sha256(b"stable bytes\n").hexdigest(), "stable descriptor hash failed")
+        sparse_image = root / "streaming-image.sqsh"
+        with sparse_image.open("wb") as stream:
+            stream.truncate(64 * 1024 * 1024)
+        sparse_image.chmod(0o444)
+        import tracemalloc
+
+        tracemalloc.start()
+        sparse_digest = digest_file(str(sparse_image), "streaming image", 0o444)
+        _, peak_memory = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        require(sparse_digest.size == 64 * 1024 * 1024, "streaming image size drift")
+        require(peak_memory < 4 * CHUNK, "image digest retained whole-file bytes in memory")
+        cases.append("streaming-image-digest")
         replaced = root / "replaced"
         replaced.mkdir()
         with opened_path(str(replaced), final_directory=True) as fd:

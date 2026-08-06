@@ -187,6 +187,22 @@ def resolve_base_descriptor(base: dict[str, str], target: str) -> str:
     `docker://nvcr.io#<image>:<tag>` tag import would violate the lock's
     floating_input_rule, so the digest must come from the lock.
     """
+    validator_environment = os.environ.copy()
+    validator_environment["SOURCES_PATH_OVERRIDE"] = str(SOURCES_PATH)
+    try:
+        subprocess.run(
+            [str(LOCK_VALIDATOR), "--require-complete"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=validator_environment,
+        )
+    except FileNotFoundError:
+        fail(f"source-lock validator is missing: {LOCK_VALIDATOR}")
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "").strip().splitlines()
+        tail = detail[-1] if detail else f"exit {error.returncode}"
+        fail(f"source lock failed complete structural validation: {tail}")
     lock = load_json(SOURCES_PATH, "source lock")
     status = lock.get("status")
     unresolved = lock.get("unresolved") or []
@@ -241,7 +257,7 @@ def import_base(base: dict[str, str], descriptor: str, import_dir: Path) -> Path
     return out
 
 
-def publish_no_clobber(source: Path, destination: Path, label: str) -> None:
+def link_no_clobber(source: Path, destination: Path, label: str) -> os.stat_result:
     info = source.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
         fail(f"{label} source is not a trusted regular file: {source}")
@@ -252,7 +268,88 @@ def publish_no_clobber(source: Path, destination: Path, label: str) -> None:
     published = destination.lstat()
     if (published.st_dev, published.st_ino) != (info.st_dev, info.st_ino):
         fail(f"{label} publication identity changed: {destination}")
-    source.unlink()
+    return info
+
+
+def unlink_exact_publication(destination: Path, source_info: os.stat_result, label: str) -> None:
+    try:
+        published = destination.lstat()
+    except FileNotFoundError:
+        return
+    if (published.st_dev, published.st_ino) != (source_info.st_dev, source_info.st_ino):
+        fail(f"{label} rollback refused a replaced destination: {destination}")
+    destination.unlink()
+
+
+def publish_pair_no_clobber(artifact_source: Path, artifact: Path, checksum_source: Path, checksum: Path) -> None:
+    """Publish a checksum/artifact pair without overwrites or artifact-only residue.
+
+    The checksum is linked first. If the artifact link loses a race, the exact
+    checksum inode is rolled back. A crash can therefore expose a checksum
+    before its artifact, but never an artifact whose checksum was not already
+    published.
+    """
+    published: list[tuple[Path, os.stat_result, str]] = []
+    try:
+        checksum_info = link_no_clobber(checksum_source, checksum, "candidate checksum")
+        published.append((checksum, checksum_info, "candidate checksum"))
+        artifact_info = link_no_clobber(artifact_source, artifact, "candidate artifact")
+        published.append((artifact, artifact_info, "candidate artifact"))
+    except Exception:
+        for destination, source_info, label in reversed(published):
+            unlink_exact_publication(destination, source_info, label)
+        raise
+    artifact_source.unlink()
+    checksum_source.unlink()
+
+
+def publication_self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="chapar-image-publication.") as raw:
+        root = Path(raw)
+
+        def source(name: str, payload: str) -> Path:
+            path = root / name
+            path.write_text(payload, encoding="utf-8")
+            path.chmod(0o444)
+            return path
+
+        artifact = root / "candidate.sqsh"
+        checksum = root / "candidate.sqsh.sha256"
+        artifact_source = source("artifact.partial", "artifact\n")
+        checksum_source = source("checksum.partial", "digest  candidate.sqsh\n")
+        publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum)
+        if artifact.read_text(encoding="utf-8") != "artifact\n" or checksum.read_text(encoding="utf-8") != "digest  candidate.sqsh\n":
+            fail("publication self-test changed successful pair bytes")
+
+        artifact.unlink()
+        checksum.unlink()
+        artifact.write_text("retained artifact\n", encoding="utf-8")
+        artifact.chmod(0o444)
+        artifact_source = source("artifact-race.partial", "new artifact\n")
+        checksum_source = source("checksum-race.partial", "new digest\n")
+        try:
+            publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum)
+        except BuildError:
+            pass
+        else:
+            fail("publication self-test overwrote an artifact collision")
+        if artifact.read_text(encoding="utf-8") != "retained artifact\n" or checksum.exists():
+            fail("artifact collision left changed bytes or checksum residue")
+
+        artifact.unlink()
+        checksum.write_text("retained checksum\n", encoding="utf-8")
+        checksum.chmod(0o444)
+        artifact_source = source("artifact-checksum-race.partial", "new artifact\n")
+        checksum_source = source("checksum-checksum-race.partial", "new digest\n")
+        try:
+            publish_pair_no_clobber(artifact_source, artifact, checksum_source, checksum)
+        except BuildError:
+            pass
+        else:
+            fail("publication self-test overwrote a checksum collision")
+        if artifact.exists() or checksum.read_text(encoding="utf-8") != "retained checksum\n":
+            fail("checksum collision published an artifact or changed checksum bytes")
+    print("PASS: candidate artifact/checksum pair publication is no-clobber and rollback-safe")
 
 
 # ------------------------------------------------------------ release closure --
@@ -458,6 +555,9 @@ def verify(enroot: str, container: str, arch: str, spack_target: str, base_id: s
 # ----------------------------------------------------------------------- main --
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-test-publication"]:
+        publication_self_test()
+        return 0
     parser = argparse.ArgumentParser(description="Layer a Chapar environment release into a digest-locked base image")
     parser.add_argument("--target", required=True)
     parser.add_argument("--base", default="nvidia-vlad", choices=tuple(BASES))
@@ -490,6 +590,9 @@ def main() -> int:
         fail(f"release dir is not a directory: {release_dir}")
     metadata = read_metadata(release_dir)
     arch = metadata["arch"]
+    expected_arch = f"linux-{metadata['os']}-{target_spec['spack_target']}"
+    if arch != expected_arch:
+        fail(f"release architecture mismatch: target {args.target} requires {expected_arch}, release records {arch}")
     store = absolute(metadata["store"], "release store")
     if metadata["env_path"] != base["env_path"]:
         fail(
@@ -567,8 +670,7 @@ def main() -> int:
                 stream.flush()
                 os.fsync(stream.fileno())
             checksum_partial.chmod(0o444)
-            publish_no_clobber(partial, out, "candidate artifact")
-            publish_no_clobber(checksum_partial, checksum, "candidate checksum")
+            publish_pair_no_clobber(partial, out, checksum_partial, checksum)
         finally:
             partial.unlink(missing_ok=True)
             if checksum_partial is not None:

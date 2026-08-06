@@ -8,7 +8,8 @@ TMP_BASE="$(mktemp -d "${TMPDIR:-/tmp}/chapar-image-plan.XXXXXX")"
 TMP_BASE="$(cd "${TMP_BASE}" && pwd -P)"
 trap 'chmod -R u+rwX "${TMP_BASE}" 2>/dev/null || true; rm -rf "${TMP_BASE}"' EXIT HUP INT TERM
 
-PIPELINE_ROOT="${TMP_BASE}/pipeline"
+REPOSITORY_ROOT="${TMP_BASE}/repository"
+PIPELINE_ROOT="${REPOSITORY_ROOT}/containers/images"
 PLAN_SCRIPT="${PIPELINE_ROOT}/build-image.sh"
 RELEASE_DIR="${TMP_BASE}/release"
 STORE_ROOT="${TMP_BASE}/store"
@@ -24,9 +25,14 @@ ROOT_HASH="aaaabbbb"
 RUNTIME_HASH="ccccdddd"
 BUILD_HASH="eeeeffff"
 
-mkdir -p "${PIPELINE_ROOT}/tests" "${CANDIDATE_ROOT}" "${FINAL_ROOT}" \
+mkdir -p "${PIPELINE_ROOT}/tests" "${REPOSITORY_ROOT}/etc/system/base" \
+  "${CANDIDATE_ROOT}" "${FINAL_ROOT}" \
   "${TOOLS_ROOT}" "${HOME_ROOT}" "${OUTPUT_ROOT}" "${PYTHON_GUARD_ROOT}"
 cp "${BUILD_IMAGE}" "${PLAN_SCRIPT}"
+cp "${ROOT_DIR}/containers/images/tests/validate-locks.sh" "${PIPELINE_ROOT}/tests/validate-locks.sh"
+cp "${ROOT_DIR}/containers/images/targets.json" "${PIPELINE_ROOT}/targets.json"
+cp "${ROOT_DIR}/containers/images/sources-lock.json" "${PIPELINE_ROOT}/sources-template.json"
+cp "${ROOT_DIR}/etc/system/base/repos.yaml" "${REPOSITORY_ROOT}/etc/system/base/repos.yaml"
 chmod 0755 "${PLAN_SCRIPT}"
 printf 'candidate sentinel\n' >"${CANDIDATE_ROOT}/sentinel.txt"
 printf 'final sentinel\n' >"${FINAL_ROOT}/sentinel.txt"
@@ -58,6 +64,8 @@ write_fixture() {
     "${STORE_ROOT}/root-1.0-${ROOT_HASH}" \
     "${STORE_ROOT}/runtime-1.0-${RUNTIME_HASH}" \
     "${STORE_ROOT}/build-only-1.0-${BUILD_HASH}"
+  SOURCES_PATH_OVERRIDE="${PIPELINE_ROOT}/sources-template.json" \
+    "${PIPELINE_ROOT}/tests/validate-locks.sh" --emit-synthetic-complete >"${PIPELINE_ROOT}/sources-lock.json"
   "${PYTHON_BIN}" - "${PIPELINE_ROOT}/targets.json" "${PIPELINE_ROOT}/sources-lock.json" \
     "${RELEASE_DIR}" "${STORE_ROOT}" "${target}" "${arch}" \
     "${ROOT_HASH}" "${RUNTIME_HASH}" "${BUILD_HASH}" <<'PY'
@@ -66,39 +74,8 @@ import sys
 from pathlib import Path
 
 targets_path, sources_path, release_raw, store_raw, target, arch, root_hash, runtime_hash, build_hash = sys.argv[1:]
-targets = {
-    "linux-x86_64-generic": {
-        "oci_platform": "linux/amd64",
-        "native_arch": "x86_64",
-        "spack_target": "x86_64",
-    },
-    "linux-x86_64-v4": {
-        "oci_platform": "linux/amd64",
-        "native_arch": "x86_64",
-        "spack_target": "x86_64_v4",
-    },
-    "linux-aarch64-gb300": {
-        "oci_platform": "linux/arm64",
-        "native_arch": "aarch64",
-        "spack_target": "aarch64",
-    },
-}
-Path(targets_path).write_text(json.dumps({"targets": targets}, sort_keys=True), encoding="utf-8")
-sources = {
-    "status": "complete",
-    "unresolved": [],
-    "verified": {
-        "nvidia_hpc_benchmarks_oci": {
-            "image": "nvcr.io/nvidia/hpc-benchmarks",
-            "tag": "26.02",
-            "platforms": {
-                "linux-x86_64-v4": {"descriptor_digest": "sha256:" + "1" * 64},
-                "linux-aarch64-gb300": {"descriptor_digest": "sha256:" + "2" * 64},
-            },
-        }
-    },
-}
-Path(sources_path).write_text(json.dumps(sources, sort_keys=True), encoding="utf-8")
+json.loads(Path(targets_path).read_text(encoding="utf-8"))
+json.loads(Path(sources_path).read_text(encoding="utf-8"))
 release = Path(release_raw)
 release.joinpath("metadata.txt").write_text(
     "release_id: plan-fixture\n"
@@ -173,23 +150,6 @@ invoke_plan() {
       --plan-only
 }
 
-invoke_plan_with_arch_contract() {
-  local target="$1"
-  local output
-  output="$(invoke_plan "${target}")" || return
-  printf '%s\n' "${output}"
-  local release_line="$(printf '%s\n' "${output}" | grep '^release:')"
-  local arch="${release_line##*arch=}"
-  case "${target}" in
-    linux-x86_64-v4) [[ "${arch}" == *x86_64_v4 ]] ;;
-    linux-aarch64-gb300) [[ "${arch}" == *aarch64 ]] ;;
-    *) return 0 ;;
-  esac || {
-    printf 'plan contract rejected target/arch mismatch: target=%s arch=%s\n' "${target}" "${arch}" >&2
-    return 65
-  }
-}
-
 assert_roots_unchanged() {
   local name="$1"
   local candidate_before="$2"
@@ -255,12 +215,15 @@ expect_failure() {
   printf 'PASS: %s failed closed before tools or artifact writes\n' "${name}"
 }
 
+expect_success publication-pair "${PLAN_SCRIPT}" --self-test-publication
+grep -Fqx 'PASS: candidate artifact/checksum pair publication is no-clobber and rollback-safe' "${OUTPUT_ROOT}/publication-pair.out"
+
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
-expect_success x86-plan invoke_plan_with_arch_contract linux-x86_64-v4
+expect_success x86-plan invoke_plan linux-x86_64-v4
 grep -Fqx 'artifact:      nvidia-vlad+26.02-linux-x86_64-v4.sqsh' "${OUTPUT_ROOT}/x86-plan.out"
 
 write_fixture linux-aarch64-gb300 linux-ubuntu24.04-aarch64
-expect_success arm-plan invoke_plan_with_arch_contract linux-aarch64-gb300
+expect_success arm-plan invoke_plan linux-aarch64-gb300
 grep -Fqx 'artifact:      nvidia-vlad+26.02-linux-aarch64-gb300.sqsh' "${OUTPUT_ROOT}/arm-plan.out"
 
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
@@ -272,7 +235,17 @@ value["status"] = "blocked"
 value["unresolved"] = [{"category": "nvidia_hpc_benchmarks_oci"}]
 json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
 PY
-expect_failure blocked-lock 'source lock is not usable' invoke_plan linux-x86_64-v4
+expect_failure blocked-lock 'source lock failed complete structural validation' invoke_plan linux-x86_64-v4
+
+write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
+"${PYTHON_BIN}" - "${PIPELINE_ROOT}/sources-lock.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+value = json.load(open(path, encoding="utf-8"))
+del value["verified"]["builder_tools"]
+json.dump(value, open(path, "w", encoding="utf-8"), sort_keys=True)
+PY
+expect_failure incomplete-complete-lock 'source lock failed complete structural validation' invoke_plan linux-x86_64-v4
 
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
 expect_failure unknown-base 'invalid choice' invoke_plan linux-x86_64-v4 unknown-base
@@ -290,7 +263,7 @@ PY
 expect_failure wrong-env-path 'but base' invoke_plan linux-x86_64-v4
 
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-aarch64
-expect_failure target-arch-mismatch 'plan contract rejected target/arch mismatch' invoke_plan_with_arch_contract linux-x86_64-v4
+expect_failure target-arch-mismatch 'release architecture mismatch' invoke_plan linux-x86_64-v4
 
 write_fixture linux-x86_64-v4 linux-ubuntu24.04-x86_64_v4
 rm -rf "${STORE_ROOT}/runtime-1.0-${RUNTIME_HASH}"

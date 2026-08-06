@@ -178,10 +178,9 @@ lock-gate (nscale-k8s) ──► build-env (nscale-chapar-builder, per env×arch
    - Download the artifact from step 3.
    - `preflight.sh --mode runtime --target <target> --sha256 <artifact sha>`
      — for `linux-x86_64-v4` this enforces CPUID and ELF `x86-64-v4` evidence
-     on the actual node class. Runtime/publisher checks are target-scoped,
-     not base-scoped (`preflight.sh` only reads `--base` in build mode, to
-     pick which locked descriptor to skopeo-inspect); `--base` is accepted
-     everywhere but unused outside that one check.
+     on the actual node class. Every mode enforces the exact selected
+     `(base, target)` matrix; build mode additionally uses the base to select
+     the locked descriptor that `skopeo inspect` verifies.
    - An `srun --container-image=<candidate .sqsh>` smoke job: `module use
      /opt/chapar/modulefiles/<arch>`, load each root module, run its
      `--version` check. For `nvidia-vlad` additionally run the NVIDIA

@@ -244,6 +244,7 @@ refresh_build_args() {
     --site-contract "${CONTRACT}"
     --site-contract-sha256 "$(hash_file "${CONTRACT}")"
     --mode build
+    --base ubuntu-hpcsim
   )
 }
 
@@ -286,6 +287,12 @@ chmod 0755 "${FIXTURE}"
 expect_failure permissive-test-root "${PREFLIGHT}" "${BUILD_ARGS[@]}"
 chmod 0700 "${FIXTURE}"
 expect_failure bad-architecture env VLAD_PREFLIGHT_TEST_UNAME_M=aarch64 "${PREFLIGHT}" "${BUILD_ARGS[@]}"
+INVALID_NVIDIA_GENERIC_ARGS=("${BUILD_ARGS[@]}")
+INVALID_NVIDIA_GENERIC_ARGS[$((${#INVALID_NVIDIA_GENERIC_ARGS[@]} - 1))]=nvidia-vlad
+expect_failure invalid-nvidia-generic "${PREFLIGHT}" "${INVALID_NVIDIA_GENERIC_ARGS[@]}"
+INVALID_UBUNTU_V4_ARGS=("${BUILD_ARGS[@]}")
+INVALID_UBUNTU_V4_ARGS[1]=linux-x86_64-v4
+expect_failure invalid-ubuntu-v4 "${PREFLIGHT}" "${INVALID_UBUNTU_V4_ARGS[@]}"
 mv "${TOOLS}/syft" "${TOOLS}/syft.hidden"
 expect_failure missing-tool "${PREFLIGHT}" "${BUILD_ARGS[@]}"
 mv "${TOOLS}/syft.hidden" "${TOOLS}/syft"
@@ -552,7 +559,8 @@ chmod 0600 "${CONTRACT}"
   --image-root "${IMAGE_ROOT}" \
   --site-contract "${CONTRACT}" \
   --site-contract-sha256 "$(hash_file "${CONTRACT}")" \
-  --mode runtime >"${FIXTURE}/runtime-pass.json"
+  --mode runtime \
+  --base ubuntu-hpcsim >"${FIXTURE}/runtime-pass.json"
 
 python3 - "${CONTRACT}" "${MACHINE_ID}" <<'PY'
 import hashlib, json, sys
@@ -578,6 +586,7 @@ PUBLISHER_ARGS=(
   --site-contract "${CONTRACT}"
   --site-contract-sha256 "$(hash_file "${CONTRACT}")"
   --mode publisher
+  --base ubuntu-hpcsim
 )
 chmod 0770 "${IMAGE_ROOT}/${TARGET}/releases"
 expect_failure publisher-group-write-mode "${PREFLIGHT}" "${PUBLISHER_ARGS[@]}"
