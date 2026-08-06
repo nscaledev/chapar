@@ -47,6 +47,7 @@ ALLOWLIST=(
     docs/ci-github-actions.md
     docs/nscale-vlad-manual-build.md
     envs/vlad/README.md
+    envs/vlad/release.sh
     envs/vlad/spack.yaml
     envs/vlad/tests/target-policy-test.py
     envs/vlad/tests/target_policy_yaml.py
@@ -847,7 +848,7 @@ root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 expected = {
     "containers/images/preflight.sh": "05454af523fc7c21a4c68cb439fd423c01aaefb9b92b04e75b03194321d2e3ba",
-    "containers/images/build-image.sh": "a5e5e7b49bdbbb841a34508ba8bcc5c9df255142ee514112cb842c4479975501",
+    "containers/images/build-image.sh": "6971909c2a81a460e09ab4cf585998dabca9a0ba933f24a2fa7a0551c5f8da13",
     "containers/images/tests/validate-locks.sh": "fe743dbd9e9a7862109d887050f4a411bbf18917fe5b1d6d8df36c1c93bba7b2",
     "containers/images/tests/preflight-test.sh": "99db8a48f142b1833fc480f4f0209e181029b143dc877dd0d6e50ee5d406a679",
     "ci/tests/vlad-image-provisioning-test.sh": "d98484412d3bd869e76501a8565238cdf94b7d793580a0e97c84e80a2e3a1260",
@@ -856,15 +857,15 @@ expected = {
     "ci/sbatch-env-build.sh": "7a9fa1659d6be1ee69ed4a918a9d99a54c0df91e6c8ce88d316444644e1390e2",
     "agents/skills/skill-creator/scripts/quick_validate.py": "38aca4cfdd814407fceb47ee663d50eb4a55ef9c48cbdab6ee9e9e5ad5aa0618",
     "etc/init.sh": "91aa4e4a9548df898fa102c44c1c3f0a78881e71d51412c8b7b29d6e52fb9392",
-    "envs/vlad/release.sh": "2a88119229b2c7134a248363fc443c4af7517f193846cdad5dbbe148ff644b67",
+    "envs/vlad/release.sh": "7d9ccb501a79086e37cf0c365703c4b0cd76f18438439ca58aa9cc054f03ff61",
     "envs/hpcsim/release.sh": "e866b0a25af62bb4626d3f677b0fa5bd0cd32dbc7f2f0ef2427f35d8b6a4b7d0",
-    "envs/vlad/tests/target-policy-test.py": "eb5c1829499b63f309cecb78a7985e7a73df9d34097f5feae2203bed88d6fdb2",
-    "envs/vlad/tests/target_policy_yaml.py": "da8f42e3f78070265a014a05b2ae078d4611397a05c0393b58a5687e2a676858",
-    "containers/images/tests/build-image-plan-test.sh": "fb85796b8f2cf156283d704e474c595da8de768704c2e8bca71197d23c4c936d",
+    "envs/vlad/tests/target-policy-test.py": "b0aab36be2b0882638b0a528f17eb9603a384ab19aa88ed1e038ff0910a2cf83",
+    "envs/vlad/tests/target_policy_yaml.py": "8f5c8c73c1bb9d49cdb4adf132948ee877bf450a2b5821d5c4e262ec791b67fc",
+    "containers/images/tests/build-image-plan-test.sh": "c76c2f208f2c20b6c5064e2899b17362e97d114e44f4787d71ba63b88b94f617",
     "ci/tests/no-direct-install-surface-test.py": "99e77a6248def13a944fce5490ad1b51101c3b1867ff5b00674cd9ca1a6f38c5",
     "ci/tests/no_direct_install_inputs.py": "3f84b748f5213199db3e037f6b824c7265ce867f2d7ba88fd9b6987de3ef1f19",
-    "ci/tests/nscale-vlad-runbook-test.py": "9d6d6cbb5f66210678f8232e4cb27d8fa52a0955d298639dda03667c8ddd4973",
-    "ci/verify-vlad-source-approval.py": "91fb84f2b09a427d3a62aa42e0afad1744dcf12d5c035aa762a0a23828757b52",
+    "ci/tests/nscale-vlad-runbook-test.py": "6955727608b5028680ee0c461ab0ce31ba70ffcbba621523e66bbb6eb5aff9b5",
+    "ci/verify-vlad-source-approval.py": "ded761fb53eb5d7027aff2a181e929950657547cf753e621b094f6bd71142c49",
     "ci/install-validated-sqsh.py": "e2163e20271724fd09e65563d9e9508cdff7673473e1bfc1fcb15d480b194ef6",
     "ci/validated_sqsh_installer.py": "6e0004106b6d9164fd2bbf690841a3a7210ad41fdda2f88d02bfc5458ef55612",
     "ci/validated_sqsh_installer_selftest.py": "58c30e89485f7542327e20bcacd279e24b2ea786633200f2fa5a4af53b601d87",
@@ -1248,6 +1249,7 @@ run_target_policy_self_test() {
 
 run_default_gate() {
     local run_root path_value tracked_nul before_status after_status before_tree after_tree before_lock after_lock shell_file
+    [ -n "${SPACK_SOURCE}" ] || fail "setup error: the full offline gate requires CHAPAR_OFFLINE_SPACK_SOURCE and CHAPAR_OFFLINE_SPACK_PACKAGES_SOURCE"
     run_root="${ACTIVE_RUN_ROOT}"
     check_scope --require-clean
     before_tree="${run_root}/tree-before.nul"
@@ -1279,14 +1281,10 @@ PY
 
     cd "${ROOT_DIR}"
     run_clean "${run_root}" "${path_value}" python3 envs/vlad/tests/target-policy-test.py envs/vlad/spack.yaml containers/images/targets.json
-    if [ -n "${SPACK_SOURCE}" ]; then
-        run_clean "${run_root}" "${path_value}" python3 envs/vlad/tests/target-policy-test.py \
-            --spack-source "${SPACK_SOURCE}" \
-            --spack-packages-source "${SPACK_PACKAGES_SOURCE}" \
-            envs/vlad/spack.yaml containers/images/targets.json
-    else
-        printf 'SKIP: pinned RequirementParser semantic validation (CHAPAR_OFFLINE_SPACK_SOURCE and CHAPAR_OFFLINE_SPACK_PACKAGES_SOURCE unset)\n'
-    fi
+    run_clean "${run_root}" "${path_value}" python3 envs/vlad/tests/target-policy-test.py \
+        --spack-source "${SPACK_SOURCE}" \
+        --spack-packages-source "${SPACK_PACKAGES_SOURCE}" \
+        envs/vlad/spack.yaml containers/images/targets.json
     run_target_policy_self_test "${run_root}" "${path_value}"
     run_clean "${run_root}" "${path_value}" bash containers/images/tests/validate-locks.sh --self-test
     run_expected_failure 1 "source lock is blocked and must fail closed for production use" lock-require-complete "${run_root}" \

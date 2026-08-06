@@ -36,11 +36,14 @@ REMOTE: Final = "https://github.com/nscaledev/chapar.git"
 SOURCE_SCHEMA: Final = "chapar-vlad-source-approval/v1"
 RELEASE_SCHEMA: Final = "chapar-vlad-release-binding/v1"
 BUILDER_SCHEMA: Final = "chapar-vlad-builder-handoff/v1"
+BUILDER_TOOLS_SCHEMA: Final = "chapar-vlad-builder-tools/v1"
 RUNTIME_SCHEMA: Final = "chapar-vlad-runtime-receipt/v1"
+TARGET_NATIVE_ARCH: Final = {"linux-x86_64-v4": "x86_64", "linux-aarch64-gb300": "aarch64"}
 SCHEMA_KEYS: Final = {
     SOURCE_SCHEMA: frozenset({"schema", "approved_by", "approved_at", "change_ticket", "chapar_remote", "chapar_commit", "source_lock_path", "source_lock_sha256"}),
     RELEASE_SCHEMA: frozenset({"schema", "release_dir", "release_id", "chapar_commit", "source_lock_sha256", "target", "metadata_path", "metadata_sha256", "spack_lock_path", "spack_lock_sha256", "status"}),
-    BUILDER_SCHEMA: frozenset({"schema", "build_root", "chapar_commit", "source_lock_sha256", "release_binding", "release_binding_sha256", "target", "image_id", "image_path", "image_sha256", "image_size", "validation_root"}),
+    BUILDER_SCHEMA: frozenset({"schema", "build_root", "chapar_commit", "source_lock_sha256", "release_binding", "release_binding_sha256", "target", "image_id", "image_path", "image_sha256", "image_size", "validation_root", "builder_tools", "builder_tools_sha256"}),
+    BUILDER_TOOLS_SCHEMA: frozenset({"schema", "target", "native_arch", "tools"}),
     RUNTIME_SCHEMA: frozenset({"schema", "builder_handoff_sha256", "release_binding_sha256", "target", "image_path", "image_sha256", "validator_root", "validator_image_root", "runtime_receipt_path", "runtime_preflight_sha256", "smoke_output_sha256", "status"}),
 }
 DIRECTORY_IDENTITY_KEYS: Final = frozenset({"directory_identity"})
@@ -261,6 +264,102 @@ def write_exclusive_json(raw: str, data: JsonMap) -> Sha256:
     return reread.sha256
 
 
+def trusted_git(root: str, *arguments: str) -> subprocess.CompletedProcess[bytes]:
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    command = [
+        "/usr/bin/git",
+        "--no-pager",
+        "--no-replace-objects",
+        "-C",
+        root,
+        "-c",
+        f"safe.directory={root}",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.untrackedCache=false",
+        *arguments,
+    ]
+    return subprocess.run(command, check=True, capture_output=True, env=environment)
+
+
+def checkout_paths(root: str) -> frozenset[str]:
+    found: set[str] = set()
+    for directory, directories, files in os.walk(root, topdown=True, followlinks=False):
+        relative_directory = os.path.relpath(directory, root)
+        if relative_directory == ".":
+            directories[:] = [name for name in directories if name != ".git"]
+        for name in tuple(directories):
+            path = os.path.join(directory, name)
+            if os.path.islink(path):
+                relative = os.path.relpath(path, root)
+                found.add(relative)
+                directories.remove(name)
+        for name in files:
+            if relative_directory == "." and name == ".git":
+                continue
+            found.add(os.path.relpath(os.path.join(directory, name), root))
+    return frozenset(found)
+
+
+def validate_checkout(root_raw: str, commit_raw: str, allowed_paths: frozenset[str]) -> int:
+    root = canonical_absolute(root_raw, "checkout root")
+    commit = require_commit(commit_raw)
+    require(allowed_paths <= frozenset({"envs/vlad/spack.lock"}), "checkout allow-list contains unsupported path")
+    head = trusted_git(root, "rev-parse", "HEAD").stdout.decode().strip()
+    remote = trusted_git(root, "remote", "get-url", "origin").stdout.decode().strip()
+    require(head == commit, "approved commit does not match checkout HEAD")
+    require(remote == REMOTE, "checkout origin does not match approved remote")
+    tree = trusted_git(root, "ls-tree", "-rz", "--full-tree", commit).stdout
+    tracked: dict[str, tuple[str, str]] = {}
+    for raw_entry in tree.split(b"\0"):
+        if not raw_entry:
+            continue
+        metadata, separator, raw_path = raw_entry.partition(b"\t")
+        require(separator == b"\t", "checkout tree entry is malformed")
+        try:
+            mode, object_type, _object_id = metadata.decode("ascii").split(" ")
+            relative = raw_path.decode("utf-8")
+        except (UnicodeDecodeError, ValueError) as error:
+            fail(f"checkout tree entry is malformed: {error}")
+        require(object_type == "blob" and mode in {"100644", "100755", "120000"}, f"unsupported checkout entry: {relative}")
+        require(not relative.startswith("/") and os.path.normpath(relative) == relative and ".." not in relative.split("/"), "checkout path is not canonical")
+        require(relative not in tracked, f"duplicate checkout path: {relative}")
+        tracked[relative] = (mode, f"{commit}:{relative}")
+    actual = checkout_paths(root)
+    approved = frozenset(tracked) | allowed_paths
+    extra = sorted(actual - approved)
+    missing = sorted(frozenset(tracked) - actual)
+    if extra:
+        fail(f"checkout has unapproved path: {extra[0]}")
+    if missing:
+        fail(f"checkout is missing tracked path: {missing[0]}")
+    for relative, (mode, object_spec) in tracked.items():
+        expected = trusted_git(root, "cat-file", "blob", object_spec).stdout
+        absolute = f"{root}/{relative}"
+        if mode == "120000":
+            with opened_parent(absolute) as (parent_fd, name):
+                info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                require(stat.S_ISLNK(info.st_mode), f"checkout type mismatch: {relative}")
+                actual_bytes = os.fsencode(os.readlink(name, dir_fd=parent_fd))
+        else:
+            content = read_file(absolute, f"checkout path {relative}")
+            require((content.mode & 0o111 != 0) == (mode == "100755"), f"checkout executable mode mismatch: {relative}")
+            actual_bytes = content.content
+        require(actual_bytes == expected, f"checkout blob mismatch: {relative}")
+    return len(tracked)
+
+
 def validate_source(data: JsonMap, chapar_root: str, approved_by: str, ticket: str) -> None:
     require_schema(data, SOURCE_SCHEMA)
     root = canonical_absolute(chapar_root, "chapar root")
@@ -278,12 +377,7 @@ def validate_source(data: JsonMap, chapar_root: str, approved_by: str, ticket: s
     require(lock_path == f"{root}/containers/images/sources-lock.json", "source_lock_path mismatch")
     lock = read_file(lock_path, "source lock")
     require(lock.sha256 == require_sha(expect_string(data, "source_lock_sha256"), "source lock digest"), "source lock content mismatch")
-    git_env = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_OPTIONAL_LOCKS": "0"}
-    git_prefix = ["/usr/bin/git", "--no-pager", "--no-replace-objects", "-C", root, "-c", f"safe.directory={root}", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false"]
-    head = subprocess.run([*git_prefix, "rev-parse", "HEAD"], check=True, capture_output=True, text=True, env=git_env).stdout.strip()
-    remote = subprocess.run([*git_prefix, "remote", "get-url", "origin"], check=True, capture_output=True, text=True, env=git_env).stdout.strip()
-    require(head == commit, "approved commit does not match checkout HEAD")
-    require(remote == REMOTE, "checkout origin does not match approved remote")
+    validate_checkout(root, commit, frozenset())
 
 
 def release_data(inputs: ReleaseInputs) -> JsonMap:
@@ -327,6 +421,18 @@ def validate_release(data: JsonMap, inputs: ReleaseInputs | None = None) -> None
         require(data == expected, "release binding fields do not match expected inputs")
 
 
+def validate_builder_tools(data: JsonMap, target: str) -> None:
+    require_schema(data, BUILDER_TOOLS_SCHEMA)
+    require(expect_string(data, "target") == target, "builder tool evidence target mismatch")
+    require(expect_string(data, "native_arch") == TARGET_NATIVE_ARCH[target], "builder tool evidence architecture mismatch")
+    tools = data.get("tools")
+    require(type(tools) is dict and set(tools) == {"enroot", "skopeo"}, "builder tool evidence identities mismatch")
+    for name in ("enroot", "skopeo"):
+        value = tools.get(name) if isinstance(tools, dict) else None
+        require(type(value) is str, f"builder tool evidence {name} digest must be a string")
+        require_sha(value, f"builder tool evidence {name} digest")
+
+
 def validate_builder(data: JsonMap, expected_commit: str | None = None) -> None:
     require_schema(data, BUILDER_SCHEMA)
     build_root = canonical_absolute(expect_string(data, "build_root"), "build root")
@@ -343,6 +449,13 @@ def validate_builder(data: JsonMap, expected_commit: str | None = None) -> None:
     require(expect_string(release_json, "spack_lock_path") == f"{build_root}/envs/vlad/spack.lock", "builder build root mismatch")
     target = require_target(expect_string(data, "target"))
     require(expect_string(release_json, "target") == target, "release and builder targets differ")
+    validation_root = canonical_absolute(expect_string(data, "validation_root"), "validation root")
+    require(os.path.dirname(release_path) == validation_root, "release binding is outside validation root")
+    builder_tools_path = canonical_absolute(expect_string(data, "builder_tools"), "builder tool evidence")
+    require(os.path.dirname(builder_tools_path) == validation_root, "builder tool evidence is outside validation root")
+    builder_tools_json, builder_tools_file = receipt(builder_tools_path)
+    validate_builder_tools(builder_tools_json, target)
+    require(builder_tools_file.sha256 == require_sha(expect_string(data, "builder_tools_sha256"), "builder tool evidence digest"), "builder tool evidence digest mismatch")
     require_identifier(expect_string(data, "image_id"), "image_id")
     image_path = canonical_absolute(expect_string(data, "image_path"), "image path")
     image = digest_file(image_path, "builder image")
@@ -351,8 +464,6 @@ def validate_builder(data: JsonMap, expected_commit: str | None = None) -> None:
     require(image.mode == 0o444, "builder image is not sealed mode 0444")
     expected_suffix = f"/{target}/{expect_string(data, 'image_id')}/{image.sha256}/{os.path.basename(image_path)}"
     require(image_path.endswith(expected_suffix), "builder image is outside target/image/hash custody")
-    validation_root = canonical_absolute(expect_string(data, "validation_root"), "validation root")
-    require(os.path.dirname(release_path) == validation_root, "release binding is outside validation root")
 
 
 def builder_data(args: argparse.Namespace) -> JsonMap:
@@ -365,6 +476,10 @@ def builder_data(args: argparse.Namespace) -> JsonMap:
     require(image.size == args.image_size and args.image_size > 0, "builder image size mismatch")
     require(image.mode == 0o444, "builder image is not sealed mode 0444")
     validation_root = os.path.dirname(canonical_absolute(args.output, "builder handoff path"))
+    builder_tools_path = canonical_absolute(required(args.builder_tools, "builder tool evidence"), "builder tool evidence")
+    require(os.path.dirname(builder_tools_path) == validation_root, "builder tool evidence is outside validation root")
+    builder_tools_json, builder_tools_file = receipt(builder_tools_path)
+    validate_builder_tools(builder_tools_json, require_target(args.target))
     data: JsonMap = {
         "schema": BUILDER_SCHEMA, "build_root": build_root,
         "chapar_commit": require_commit(args.chapar_commit),
@@ -375,6 +490,8 @@ def builder_data(args: argparse.Namespace) -> JsonMap:
         "image_path": canonical_absolute(args.image, "image path"),
         "image_sha256": image.sha256, "image_size": image.size,
         "validation_root": validation_root,
+        "builder_tools": builder_tools_path,
+        "builder_tools_sha256": builder_tools_file.sha256,
     }
     validate_builder(data)
     return data
@@ -653,6 +770,9 @@ def self_test() -> None:
         source_lock = source_root / "containers/images/sources-lock.json"
         source_lock.parent.mkdir(parents=True)
         source_lock.write_text('{"status":"fixture"}\n', encoding="utf-8")
+        source_script = source_root / "build.sh"
+        source_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        source_script.chmod(0o755)
         git_env = {
             "PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C",
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -662,7 +782,7 @@ def self_test() -> None:
             "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
         }
         subprocess.run(["/usr/bin/git", "init", "--initial-branch=fixture", str(source_root)], check=True, capture_output=True, env=git_env)
-        subprocess.run(["/usr/bin/git", "-C", str(source_root), "add", "containers/images/sources-lock.json"], check=True, capture_output=True, env=git_env)
+        subprocess.run(["/usr/bin/git", "-C", str(source_root), "add", "containers/images/sources-lock.json", "build.sh"], check=True, capture_output=True, env=git_env)
         subprocess.run(["/usr/bin/git", "-C", str(source_root), "commit", "-m", "fixture source"], check=True, capture_output=True, env=git_env)
         subprocess.run(["/usr/bin/git", "-C", str(source_root), "remote", "add", "origin", REMOTE], check=True, capture_output=True, env=git_env)
         commit = subprocess.run(["/usr/bin/git", "--no-pager", "--no-replace-objects", "-C", str(source_root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True, env=git_env).stdout.strip()
@@ -674,7 +794,17 @@ def self_test() -> None:
             "source_lock_sha256": hashlib.sha256(source_lock.read_bytes()).hexdigest(),
         }
         validate_source(source_data, str(source_root), "fixture-approver", "fixture-ticket")
+        validate_checkout(str(source_root), commit, frozenset())
         cases.append("source-schema-happy")
+        source_script.write_text("#!/usr/bin/env bash\nexit 41\n", encoding="utf-8")
+        subprocess.run(["/usr/bin/git", "-C", str(source_root), "update-index", "--assume-unchanged", "build.sh"], check=True, capture_output=True, env=git_env)
+        cases.append(expect_child_failure("checkout-assume-unchanged", lambda: validate_checkout(str(source_root), commit, frozenset()), "checkout blob mismatch: build.sh"))
+        subprocess.run(["/usr/bin/git", "-C", str(source_root), "update-index", "--no-assume-unchanged", "build.sh"], check=True, capture_output=True, env=git_env)
+        subprocess.run(["/usr/bin/git", "-C", str(source_root), "checkout", "--", "build.sh"], check=True, capture_output=True, env=git_env)
+        untracked = source_root / "untracked.py"
+        untracked.write_text("raise SystemExit(41)\n", encoding="utf-8")
+        cases.append(expect_child_failure("checkout-untracked", lambda: validate_checkout(str(source_root), commit, frozenset()), "checkout has unapproved path: untracked.py"))
+        untracked.unlink()
         unknown_source = {**source_data, "unknown": "rejected"}
         cases.append(expect_child_failure("source-unknown-key", lambda: validate_source(unknown_source, str(source_root), "fixture-approver", "fixture-ticket"), "key set mismatch"))
         cases.append(expect_child_failure("source-wrong-identity", lambda: validate_source(mutated(source_data, "schema", RELEASE_SCHEMA), str(source_root), "fixture-approver", "fixture-ticket"), "wrong schema identity"))
@@ -715,6 +845,9 @@ def self_test() -> None:
         image = image_dir / "nvidia-vlad.sqsh"
         image.write_bytes(image_bytes)
         image.chmod(0o444)
+        builder_tools_path = validation_root / "builder-tools.json"
+        builder_tools_path.write_text('{"native_arch":"x86_64","schema":"chapar-vlad-builder-tools/v1","target":"linux-x86_64-v4","tools":{"enroot":"' + "c" * 64 + '","skopeo":"' + "d" * 64 + '"}}\n', encoding="utf-8")
+        builder_tools_path.chmod(0o444)
         builder_path = validation_root / "builder-handoff.json"
         builder_json: JsonMap = {
             "schema": BUILDER_SCHEMA, "build_root": str(build_root),
@@ -724,11 +857,14 @@ def self_test() -> None:
             "target": "linux-x86_64-v4", "image_id": "image-1",
             "image_path": str(image), "image_sha256": image_sha,
             "image_size": len(image_bytes), "validation_root": str(validation_root),
+            "builder_tools": str(builder_tools_path),
+            "builder_tools_sha256": hashlib.sha256(builder_tools_path.read_bytes()).hexdigest(),
         }
         validate_builder(builder_json)
         write_exclusive_json(str(builder_path), builder_json)
         cases.append("builder-schema-happy")
         cases.append(expect_child_failure("builder-image-hash-drift", lambda: validate_builder(mutated(builder_json, "image_sha256", "0" * 64)), "builder image digest mismatch"))
+        cases.append(expect_child_failure("builder-tools-hash-drift", lambda: validate_builder(mutated(builder_json, "builder_tools_sha256", "0" * 64)), "builder tool evidence digest mismatch"))
         cases.append(expect_child_failure("builder-receipt-unknown-key", lambda: validate_builder({**builder_json, "unknown": "rejected"}), "key set mismatch"))
 
         validator_image_root = root / "validator-images"
@@ -823,6 +959,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--receipt")
+    actions.add_argument("--verify-checkout", dest="verify_checkout")
     actions.add_argument("--write-release-binding", dest="write_release_binding")
     actions.add_argument("--verify-release-binding", dest="verify_release_binding")
     actions.add_argument("--write-builder-handoff", dest="write_builder_handoff")
@@ -842,11 +979,13 @@ def parse_args() -> argparse.Namespace:
     add_release_arguments(parser)
     parser.add_argument("--build-root")
     parser.add_argument("--release-binding")
+    parser.add_argument("--builder-tools")
     parser.add_argument("--image-id")
     parser.add_argument("--image")
     parser.add_argument("--image-sha256")
     parser.add_argument("--image-size", type=int)
     parser.add_argument("--expected-chapar-commit")
+    parser.add_argument("--allow-generated-spack-lock", action="store_true")
     parser.add_argument("--builder-handoff")
     parser.add_argument("--builder-handoff-sha256")
     parser.add_argument("--validator-root")
@@ -879,6 +1018,10 @@ def release_inputs(args: argparse.Namespace, output: str) -> ReleaseInputs:
 def dispatch(args: argparse.Namespace) -> None:
     if args.self_test:
         self_test()
+    elif args.verify_checkout:
+        allowed = frozenset({"envs/vlad/spack.lock"}) if args.allow_generated_spack_lock else frozenset()
+        count = validate_checkout(args.verify_checkout, required(args.expected_chapar_commit, "expected commit"), allowed)
+        print(json.dumps({"chapar_commit": args.expected_chapar_commit, "tracked_paths": count}, sort_keys=True, separators=(",", ":")))
     elif args.receipt:
         data, _ = receipt(args.receipt, required(args.expected_sha256, "expected digest"))
         validate_source(data, required(args.chapar_root, "chapar root"), required(args.expected_approved_by, "expected approver"), required(args.expected_change_ticket, "expected ticket"))

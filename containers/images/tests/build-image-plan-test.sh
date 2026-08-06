@@ -347,6 +347,8 @@ expect_failure() {
 
 expect_success publication-pair "${PLAN_SCRIPT}" --self-test-publication
 grep -Fqx 'PASS: candidate artifact/checksum pair publication is no-clobber and crash-safe' "${OUTPUT_ROOT}/publication-pair.out"
+expect_success locked-builder-tools "${PLAN_SCRIPT}" --self-test-tools
+grep -Fqx 'PASS: locked builder tools use protected absolute paths and descriptor-bound SHA-256' "${OUTPUT_ROOT}/locked-builder-tools.out"
 
 set +e
 SOURCES_PATH_OVERRIDE="${PIPELINE_ROOT}/sources-template.json" \
@@ -516,20 +518,21 @@ env -i \
     --image-id "${IMAGE_ID}" \
     --candidate-root "${CANDIDATE_ROOT}" \
     --enroot-build-root "${NONPLAN_BUILD_ROOT}" \
+    --tool-root "${TOOLS_ROOT}" \
+    --tool-evidence "${OUTPUT_ROOT}/untrusted-tools.json" \
     >"${OUTPUT_ROOT}/untrusted-base-cache.out" 2>"${OUTPUT_ROOT}/untrusted-base-cache.err"
 cache_status=$?
 set -e
 if [[ "${cache_status}" -eq 0 ]] || \
-   ! grep -Fq 'skopeo copy failed' "${OUTPUT_ROOT}/untrusted-base-cache.err" || \
-   ! grep -q '^skopeo' "${TOOL_CALL_LOG}" || \
-   grep -q $'^enroot\tcreate' "${TOOL_CALL_LOG}"; then
-  printf 'FAIL: untrusted base cache bytes were reused instead of refreshing the locked descriptor\n' >&2
+   ! grep -Fq 'tool root is not protected by UID 0' "${OUTPUT_ROOT}/untrusted-base-cache.err" || \
+   [[ -s "${TOOL_CALL_LOG}" ]]; then
+  printf 'FAIL: caller-owned PATH tools were accepted for a real build\n' >&2
   cat "${OUTPUT_ROOT}/untrusted-base-cache.err" >&2
   exit 1
 fi
 chmod 0600 "${untrusted_cache}"
 rm "${untrusted_cache}"
-printf 'PASS: preseeded regular cache bytes were ignored and the locked descriptor was refreshed\n'
+printf 'PASS: caller-owned PATH tools were rejected before base-cache or artifact use\n'
 
 : >"${TOOL_CALL_LOG}"
 set +e
@@ -547,11 +550,13 @@ env -i \
     --image-id "${IMAGE_ID}" \
     --candidate-root "${CANDIDATE_ROOT}" \
     --enroot-build-root "${NONPLAN_BUILD_ROOT}" \
+    --tool-root "${TOOLS_ROOT}" \
+    --tool-evidence "${OUTPUT_ROOT}/nonplan-tools.json" \
     >"${OUTPUT_ROOT}/nonplan.out" 2>"${OUTPUT_ROOT}/nonplan.err"
 nonplan_status=$?
 set -e
-if [[ "${nonplan_status}" -eq 0 ]] || ! grep -q '^skopeo' "${TOOL_CALL_LOG}"; then
-  printf 'FAIL: deliberate non-plan child did not stop at the fake-tool boundary\n' >&2
+if [[ "${nonplan_status}" -eq 0 ]] || ! grep -Fq 'tool root is not protected by UID 0' "${OUTPUT_ROOT}/nonplan.err" || [[ -s "${TOOL_CALL_LOG}" ]]; then
+  printf 'FAIL: deliberate non-plan child did not stop at the protected-tool boundary\n' >&2
   exit 1
 fi
 assert_roots_unchanged nonplan-fake-tool "${candidate_before}" "${final_before}"
@@ -564,6 +569,6 @@ then
   printf 'FAIL: deliberate non-plan child wrote an image artifact\n' >&2
   exit 1
 fi
-printf 'PASS: deliberate non-plan child stopped at fake skopeo before artifact writes\n'
+printf 'PASS: deliberate non-plan child rejected ambient fake tools before artifact writes\n'
 
 printf 'PASS: plan fixture suite used only disposable local files, sanitized environment variables, and denied tool stubs; no NFS, Spack, credentials, sockets, or network were required\n'

@@ -49,6 +49,7 @@ SCHEMAS: Final = {
             "schema", "build_root", "chapar_commit", "source_lock_sha256",
             "release_binding", "release_binding_sha256", "target", "image_id",
             "image_path", "image_sha256", "image_size", "validation_root",
+            "builder_tools", "builder_tools_sha256",
         }
     ),
     "chapar-vlad-runtime-receipt/v1": frozenset(
@@ -64,6 +65,10 @@ REQUIRED_BLOCK_ANCHORS: Final = (
     ': "${CHAPAR_COMMIT:?}" "${SOURCE_APPROVAL_RECEIPT:?}"',
     'bash envs/vlad/release.sh build "$RELEASE_ID"',
     'SOURCE_CLONE_ROOT=/home/hpcadmin/chapar-sources/$CHAPAR_COMMIT-$TARGET',
+    'test "$BUILDER_CODE_ROOT" = "/vast/chapar-builder-code/$CHAPAR_COMMIT"',
+    'python3 "$BUILDER_HELPER" --verify-checkout "$BUILD_ROOT"',
+    '--tool-root "$TOOL_ROOT" --tool-evidence "$BUILDER_TOOL_EVIDENCE"',
+    '--builder-tools "$BUILDER_TOOL_EVIDENCE"',
     'grep -Fx "release_id: $RELEASE_ID" "$RELEASE_DIR/metadata.txt"',
     'MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad ./validation/run integrity-test',
     'bash envs/vlad/release.sh promote "$RELEASE_ID"',
@@ -155,8 +160,9 @@ def validate_runbook(path: Path) -> None:
     require(text.count("Stop conditions:") >= 3, "each role needs stop conditions")
     for anchor in REQUIRED_BLOCK_ANCHORS:
         require(text.count(anchor) == 1, f"missing or duplicate normative anchor: {anchor}")
-    validator, publisher = blocks[2], blocks[3]
+    builder, validator, publisher = blocks[0], blocks[2], blocks[3]
     for anchor in PROTECTED_GATE_ANCHORS:
+        require(builder.count(anchor) == 1, f"builder protected gate drift: {anchor}")
         require(validator.count(anchor) == 1, f"validator protected gate drift: {anchor}")
         require(publisher.count(anchor) == 1, f"publisher protected gate drift: {anchor}")
     for block, role in ((validator, "validator"), (publisher, "publisher")):
@@ -457,19 +463,19 @@ def run_self_test() -> None:
     validate_runbook(RUNBOOK)
     mutations = {
         "missing-runtime-verification": (text.replace('--verify-runtime-receipt "$RUNTIME_RECEIPT"', "--runtime-receipt-missing", 1), "missing or duplicate normative anchor"),
-        "unsanitized-fsmonitor": (text.replace('"core.fsmonitor=false"', '"core.fsmonitor=true"', 1), "validator protected gate drift"),
-        "wildcard-safe-directory": (text.replace('f"safe.directory={root}"', '"safe.directory=*"', 1), "validator protected gate drift"),
-        "missing-safe-directory": (text.replace(', "-c", f"safe.directory={root}"', "", 1), "validator protected gate drift"),
-        "wrong-safe-directory": (text.replace('f"safe.directory={root}"', '"safe.directory=/wrong"', 1), "validator protected gate drift"),
-        "wrong-executed-file-owner": (text.replace("info.st_uid == 0", "info.st_uid == 1", 1), "validator protected gate drift"),
-        "wrong-executed-file-mode": (text.replace("not (info.st_mode & 0o022)", "bool(info.st_mode & 0o022)", 1), "validator protected gate drift"),
-        "wrong-executed-file-blob": (text.replace("actual == expected", "actual != expected", 1), "validator protected gate drift"),
-        "writable-acl-ancestor": (text.replace("result == -1 and error in", "result == 0 or error in", 1), "validator protected gate drift"),
-        "component-replacement-race": (text.replace("before.st_mtime_ns) == (after.st_dev", "before.st_mtime_ns) != (after.st_dev", 1), "validator protected gate drift"),
-        "executable-system-git-config": (text.replace('"GIT_CONFIG_NOSYSTEM":"1"', '"GIT_CONFIG_NOSYSTEM":"0"', 1), "validator protected gate drift"),
-        "executable-global-git-config": (text.replace('"GIT_CONFIG_GLOBAL":"/dev/null"', '"GIT_CONFIG_GLOBAL":"/tmp/global"', 1), "validator protected gate drift"),
-        "executable-local-git-config": (text.replace('"core.hooksPath=/dev/null"', '"core.hooksPath=.git/hooks"', 1), "validator protected gate drift"),
-        "missing-protected-gate": (text.replace("result = libc.syscall(439", "result = libc.syscall(440", 1), "validator protected gate drift"),
+        "unsanitized-fsmonitor": (text.replace('"core.fsmonitor=false"', '"core.fsmonitor=true"', 1), "builder protected gate drift"),
+        "wildcard-safe-directory": (text.replace('f"safe.directory={root}"', '"safe.directory=*"', 1), "builder protected gate drift"),
+        "missing-safe-directory": (text.replace(', "-c", f"safe.directory={root}"', "", 1), "builder protected gate drift"),
+        "wrong-safe-directory": (text.replace('f"safe.directory={root}"', '"safe.directory=/wrong"', 1), "builder protected gate drift"),
+        "wrong-executed-file-owner": (text.replace("info.st_uid == 0", "info.st_uid == 1", 1), "builder protected gate drift"),
+        "wrong-executed-file-mode": (text.replace("not (info.st_mode & 0o022)", "bool(info.st_mode & 0o022)", 1), "builder protected gate drift"),
+        "wrong-executed-file-blob": (text.replace("actual == expected", "actual != expected", 1), "builder protected gate drift"),
+        "writable-acl-ancestor": (text.replace("result == -1 and error in", "result == 0 or error in", 1), "builder protected gate drift"),
+        "component-replacement-race": (text.replace("before.st_mtime_ns) == (after.st_dev", "before.st_mtime_ns) != (after.st_dev", 1), "builder protected gate drift"),
+        "executable-system-git-config": (text.replace('"GIT_CONFIG_NOSYSTEM":"1"', '"GIT_CONFIG_NOSYSTEM":"0"', 1), "builder protected gate drift"),
+        "executable-global-git-config": (text.replace('"GIT_CONFIG_GLOBAL":"/dev/null"', '"GIT_CONFIG_GLOBAL":"/tmp/global"', 1), "builder protected gate drift"),
+        "executable-local-git-config": (text.replace('"core.hooksPath=/dev/null"', '"core.hooksPath=.git/hooks"', 1), "builder protected gate drift"),
+        "missing-protected-gate": (text.replace("result = libc.syscall(439", "result = libc.syscall(440", 1), "builder protected gate drift"),
         "builder-writable-publisher-root": (text.replace('test "$PUBLISHER_CODE_ROOT" = "/vast/chapar-publisher-code/$CHAPAR_COMMIT"', 'test "$PUBLISHER_CODE_ROOT" = "/vast/chapar-builder-writable/$CHAPAR_COMMIT"', 1), "missing or duplicate normative anchor"),
         "promoted-before-integrity": text.replace(
             'MODULE_PATH="$RELEASE_DIR/modulefiles" ENV_NAME=vlad ./validation/run integrity-test',
