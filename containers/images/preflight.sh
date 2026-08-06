@@ -22,6 +22,7 @@ from typing import Any, Final
 
 SCRIPT_DIR = Path(sys.argv[1]).resolve()
 sys.argv = [sys.argv[0], *sys.argv[2:]]
+REPOSITORY_ROOT = SCRIPT_DIR.parents[1]
 TARGETS_PATH = SCRIPT_DIR / "targets.json"
 SOURCES_PATH = SCRIPT_DIR / "sources-lock.json"
 LOCK_VALIDATOR = SCRIPT_DIR / "tests" / "validate-locks.sh"
@@ -151,7 +152,7 @@ def validate_absolute_path(raw: str, label: str) -> Path:
 
 
 def validate_not_workspace(path: Path, label: str) -> None:
-    candidates = [SCRIPT_DIR.parents[3]]
+    candidates = [REPOSITORY_ROOT]
     for name in ("GITHUB_WORKSPACE", "RUNNER_WORKSPACE"):
         value = os.environ.get(name)
         if value:
@@ -177,7 +178,7 @@ def validate_test_root(raw: str | None) -> Path:
         fail("test root must grant owner read/write/search access")
     if root.resolve() != root:
         fail("test root cannot contain symlink components")
-    if any(under(root, public_root) for public_root in PUBLIC_ROOTS) or under(root, SCRIPT_DIR.parents[3]):
+    if any(under(root, public_root) for public_root in PUBLIC_ROOTS) or under(root, REPOSITORY_ROOT):
         fail("test root cannot be public or workspace-local")
     return root
 

@@ -846,7 +846,7 @@ from pathlib import Path
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 expected = {
-    "containers/images/preflight.sh": "93b7342d2a6bd00c2e5f2111cffa743846c80c845dbb27a0edea8b56a67c188b",
+    "containers/images/preflight.sh": "05454af523fc7c21a4c68cb439fd423c01aaefb9b92b04e75b03194321d2e3ba",
     "containers/images/build-image.sh": "a5e5e7b49bdbbb841a34508ba8bcc5c9df255142ee514112cb842c4479975501",
     "containers/images/tests/validate-locks.sh": "fe743dbd9e9a7862109d887050f4a411bbf18917fe5b1d6d8df36c1c93bba7b2",
     "containers/images/tests/preflight-test.sh": "99db8a48f142b1833fc480f4f0209e181029b143dc877dd0d6e50ee5d406a679",
