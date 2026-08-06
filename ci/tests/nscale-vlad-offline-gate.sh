@@ -39,6 +39,7 @@ ALLOWLIST=(
     ci/verify-vlad-source-approval.py
     containers/README.md
     containers/images/build-image.sh
+    containers/images/preflight.sh
     containers/images/tests/build-image-plan-test.sh
     containers/images/tests/preflight-test.sh
     containers/images/tests/validate-locks.sh
