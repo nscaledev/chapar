@@ -89,7 +89,10 @@ opt-in via `module load`.
 See the canonical runbook for all runnable commands and role gates. Do not
 invent or duplicate a second command sequence here.
 
-Tests for this pipeline need `python3` with `jsonschema`:
+Tests for this pipeline need an isolated `python3` with `jsonschema` and
+PyYAML. The offline gate disables the user site; provide a prepared interpreter
+with `CHAPAR_OFFLINE_PYTHON`, or provide its module roots with
+`CHAPAR_OFFLINE_PYTHONPATH`:
 
 ```bash
 containers/images/tests/validate-locks.sh --self-test

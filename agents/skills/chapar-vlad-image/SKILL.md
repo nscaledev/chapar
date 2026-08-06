@@ -100,7 +100,10 @@ docs/ci-github-actions.md                 # proposed CI wiring (no workflows exi
 
 ## Validation
 
-Tests need `python3` with `jsonschema`:
+Tests need an isolated `python3` with `jsonschema` and PyYAML. The offline gate
+disables the user site; select a prepared interpreter with
+`CHAPAR_OFFLINE_PYTHON`, or provide its module roots with
+`CHAPAR_OFFLINE_PYTHONPATH`:
 
 ```bash
 containers/images/tests/validate-locks.sh --self-test

@@ -143,7 +143,9 @@ lock-gate (nscale-k8s) ──► build-env (nscale-chapar-builder, per env×arch
      tag-based pulls, ever.
    - `containers/images/tests/preflight-test.sh` and
      `ci/tests/vlad-image-provisioning-test.sh` as cheap regression suites
-     (need `python3` + `jsonschema`).
+     (need an isolated `python3` with `jsonschema` + PyYAML; the offline gate
+     accepts a prepared interpreter/module root through
+     `CHAPAR_OFFLINE_PYTHON{,PATH}`).
 
 2. **build-env** — matrix over `(env, arch)` pairs (vlad×2, hpcsim×1 = 3
    jobs), each on the `nscale-chapar-builder` static group:
