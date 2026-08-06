@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 SCRIPT_PATH="${ROOT_DIR}/ci/tests/nscale-vlad-offline-gate.sh"
 HOST_TMPDIR_INPUT="${TMPDIR-}"
-START_HEAD="2b289898a7fad2ab106bd29699fb1b37cd65cabe"
+START_HEAD="f1ddb52985e4890a28729ee80adfbd2337be6f6d"
 HISTORICAL_BASE="1d7ffe739ee58a485a86ea7bf5cddbd4ffd8589e"
 SOURCE_LOCK_SHA256="e093e3e213af0351a10aed5a5bbef0b27051c4f0b36503b77453d810a7dd9d12"
 PYTHON_INPUT="${CHAPAR_OFFLINE_PYTHON:-python3}"
