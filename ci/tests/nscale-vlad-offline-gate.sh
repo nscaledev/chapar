@@ -121,7 +121,7 @@ resolve_executable() {
 }
 
 hash_file() {
-    PYTHONNOUSERSITE=1 PYTHONPATH= "${PYTHON_BIN}" -I -S - "$1" <<'PY'
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" -I -S - "$1" <<'PY'
 import hashlib
 import sys
 
@@ -230,7 +230,7 @@ resolve_runtime_configuration() {
 
 capture_secure_host_temp_root() {
     local candidate="$1"
-    PYTHONNOUSERSITE=1 PYTHONPATH= "${PYTHON_BIN}" - "${candidate}" "${ROOT_DIR}" <<'PY'
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" - "${candidate}" "${ROOT_DIR}" <<'PY'
 from __future__ import annotations
 
 import os
@@ -281,7 +281,7 @@ PY
 
 validate_run_root() {
     local run_root="$1"
-    PYTHONNOUSERSITE=1 PYTHONPATH= "${PYTHON_BIN}" - \
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" - \
         "${run_root}" "${HOST_TEMP_ROOT}" "${ROOT_DIR}" <<'PY'
 from __future__ import annotations
 
@@ -325,7 +325,7 @@ remove_exact_run_root() {
     local expected_device="$2"
     local expected_inode="$3"
     local race_retained_path="${4:-}"
-    PYTHONNOUSERSITE=1 PYTHONPATH= "${PYTHON_BIN}" - \
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" - \
         "${run_root}" "${HOST_TEMP_ROOT}" "${expected_device}" "${expected_inode}" "${race_retained_path}" <<'PY'
 from __future__ import annotations
 
@@ -385,6 +385,35 @@ shutil.rmtree(deletion_root)
 os.rmdir(deletion_parent)
 if os.path.lexists(root):
     reject(f"replacement appeared at exact run-root path during cleanup: {root}")
+PY
+}
+
+remove_unvalidated_empty_run_root() {
+    local run_root="$1"
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" - \
+        "${run_root}" "${HOST_TEMP_ROOT}" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+
+root, host_root = sys.argv[1:]
+if not os.path.isabs(root) or os.path.realpath(root) != os.path.normpath(root):
+    raise SystemExit(1)
+if os.path.dirname(root) != host_root:
+    raise SystemExit(1)
+try:
+    info = os.lstat(root)
+except OSError:
+    raise SystemExit(1) from None
+if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+    raise SystemExit(1)
+with os.scandir(root) as entries:
+    if next(entries, None) is not None:
+        raise SystemExit(1)
+os.rmdir(root)
 PY
 }
 
@@ -488,6 +517,10 @@ cleanup_active_run_root() {
     local inode="${ACTIVE_RUN_INODE}"
     [ -n "${run_root}" ] || return 0
     remove_exact_run_root "${run_root}" "${device}" "${inode}" || return
+    clear_active_run_root_state
+}
+
+clear_active_run_root_state() {
     ACTIVE_RUN_ROOT=""
     ACTIVE_RUN_DEVICE=""
     ACTIVE_RUN_INODE=""
@@ -513,7 +546,7 @@ cleanup_on_signal() {
 assert_no_stale_gate_roots() {
     local host_root="$1"
     local allowed_root="$2"
-    PYTHONNOUSERSITE=1 PYTHONPATH= "${PYTHON_BIN}" - \
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" - \
         "${host_root}" "${allowed_root}" "${GATE_RUN_PREFIXES[@]}" <<'PY'
 from __future__ import annotations
 
@@ -539,13 +572,30 @@ PY
 
 create_active_run_root() {
     local label="$1"
-    local identity
+    local created_root identity run_root device inode status
     umask 077
     ACTIVE_RUN_ROOT="$(mktemp -d "${HOST_TEMP_ROOT}/${label}.XXXXXX")" || fail "setup error: could not create run root"
-    identity="$(validate_run_root "${ACTIVE_RUN_ROOT}")"
-    IFS=$'\t' read -r ACTIVE_RUN_ROOT ACTIVE_RUN_DEVICE ACTIVE_RUN_INODE <<<"${identity}"
-    [ -n "${ACTIVE_RUN_ROOT}" ] && [ -n "${ACTIVE_RUN_DEVICE}" ] && [ -n "${ACTIVE_RUN_INODE}" ] || \
+    created_root="${ACTIVE_RUN_ROOT}"
+    if [ "${OFFLINE_GATE_INTERNAL_SELF_TEST:-}" = 1 ] && [ "${OFFLINE_GATE_INTERNAL_INVALID_RUN_ROOT:-}" = 1 ]; then
+        chmod 0755 "${created_root}"
+    fi
+    if identity="$(validate_run_root "${created_root}")"; then
+        :
+    else
+        status=$?
+        remove_unvalidated_empty_run_root "${created_root}" >/dev/null 2>&1 || true
+        clear_active_run_root_state
+        return "${status}"
+    fi
+    IFS=$'\t' read -r run_root device inode <<<"${identity}"
+    if [ -z "${run_root}" ] || [ -z "${device}" ] || [ -z "${inode}" ]; then
+        remove_unvalidated_empty_run_root "${created_root}" >/dev/null 2>&1 || true
+        clear_active_run_root_state
         fail "setup error: incomplete run root identity"
+    fi
+    ACTIVE_RUN_ROOT="${run_root}"
+    ACTIVE_RUN_DEVICE="${device}"
+    ACTIVE_RUN_INODE="${inode}"
     trap 'cleanup_on_exit "$?"' EXIT
     trap 'cleanup_on_signal HUP 129' HUP
     trap 'cleanup_on_signal INT 130' INT
@@ -580,7 +630,7 @@ prepare_run_environment() {
 
 cleanup_observed_python_caches() {
     local repository="$1"
-    PYTHONNOUSERSITE=1 PYTHONPATH= "${PYTHON_BIN}" - \
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" - \
         "${repository}" "${PRODUCT_CACHE_DIRECTORIES[@]}" -- "${PRODUCT_CACHE_FILES[@]}" <<'PY'
 from __future__ import annotations
 
@@ -692,6 +742,24 @@ host_preflight() {
     done
     require_file "${PYTHON_BIN}"
     PYTHONNOUSERSITE=1 PYTHONPATH="${PYTHON_MODULE_PATH}" "${PYTHON_BIN}" - <<'PY'
+import importlib
+
+missing = []
+for module in ("jsonschema", "yaml"):
+    try:
+        importlib.import_module(module)
+    except ModuleNotFoundError as error:
+        if error.name != module:
+            raise
+        missing.append("PyYAML" if module == "yaml" else module)
+if missing:
+    raise SystemExit(
+        "setup error: offline gate Python is missing required modules: "
+        + ", ".join(missing)
+        + "; install jsonschema and PyYAML in the isolated interpreter or set "
+        "CHAPAR_OFFLINE_PYTHON and CHAPAR_OFFLINE_PYTHONPATH"
+    )
+
 import jsonschema
 import yaml
 assert jsonschema.validators.validator_for({"$schema": "https://json-schema.org/draft/2020-12/schema"})
@@ -714,7 +782,7 @@ root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 expected = {
     "containers/images/preflight.sh": "eccc4c77782bbb0ca49a598cb7df1c088b7a030905279c4ce958dfb37030d3c7",
-    "containers/images/build-image.sh": "dc967bbcc71c441b49edc5eb306e3bd6c2bd405d1705b8664d3253dca3b299b2",
+    "containers/images/build-image.sh": "2d73332c4564fb40a991b6e0431fac28d0018a92335fecc63520fd340e67ccb8",
     "containers/images/tests/validate-locks.sh": "f513ea17c52c9fb15618f5b586a1f2e47fb1db83219d7809424b43de75e0972d",
     "containers/images/tests/preflight-test.sh": "9e84a8a4e8e0e35985fe4f02e05e40e89e6cc68f5e6ab98c74c5898f937e2db2",
     "ci/tests/vlad-image-provisioning-test.sh": "afd18ab68e34d99ecf498607e1a6092eac775c7c208f5e99e4289f53be0d1e54",
@@ -725,9 +793,9 @@ expected = {
     "etc/init.sh": "91aa4e4a9548df898fa102c44c1c3f0a78881e71d51412c8b7b29d6e52fb9392",
     "envs/vlad/release.sh": "2a88119229b2c7134a248363fc443c4af7517f193846cdad5dbbe148ff644b67",
     "envs/hpcsim/release.sh": "e866b0a25af62bb4626d3f677b0fa5bd0cd32dbc7f2f0ef2427f35d8b6a4b7d0",
-    "envs/vlad/tests/target-policy-test.py": "4d321ec4ac43825244d408dd62741b9d7cafdd7cc9e3f99b026e0081cf2a04c5",
+    "envs/vlad/tests/target-policy-test.py": "eb5c1829499b63f309cecb78a7985e7a73df9d34097f5feae2203bed88d6fdb2",
     "envs/vlad/tests/target_policy_yaml.py": "da8f42e3f78070265a014a05b2ae078d4611397a05c0393b58a5687e2a676858",
-    "containers/images/tests/build-image-plan-test.sh": "25c12801749946ba0ac108a279d147ae14a569a98cfe96bc2f2a6a906605b09f",
+    "containers/images/tests/build-image-plan-test.sh": "4a22facb56faba474a2ea2009bcce347e4b25b78a110728d38b2de33f5cd9faa",
     "ci/tests/no-direct-install-surface-test.py": "99e77a6248def13a944fce5490ad1b51101c3b1867ff5b00674cd9ca1a6f38c5",
     "ci/tests/no_direct_install_inputs.py": "3f84b748f5213199db3e037f6b824c7265ce867f2d7ba88fd9b6987de3ef1f19",
     "ci/tests/nscale-vlad-runbook-test.py": "9d6d6cbb5f66210678f8232e4cb27d8fa52a0955d298639dda03667c8ddd4973",
@@ -1436,6 +1504,24 @@ self_test_gate_root_inventory() {
     printf 'PASS: gate-root inventory covers every owned prefix and fails without deleting residue\n'
 }
 
+self_test_invalid_run_root_cleanup() {
+    local temp="$1"
+    local host="${temp}/invalid-run-root-host"
+    local output status
+    mkdir "${host}"
+    chmod 0700 "${host}"
+    set +e
+    output="$(env TMPDIR="${host}" OFFLINE_GATE_INTERNAL_SELF_TEST=1 OFFLINE_GATE_INTERNAL_INVALID_RUN_ROOT=1 \
+        bash "${SCRIPT_PATH}" --internal-temp-root-probe 2>&1)"
+    status=$?
+    set -e
+    [ "${status}" -eq 1 ] || fail "invalid run-root cleanup fixture status ${status}, expected 1"
+    [[ "${output}" == *"run root mode is 0755, expected 0700"* ]] || \
+        fail "invalid run-root cleanup fixture failed for the wrong reason: ${output}"
+    assert_no_stale_gate_roots "${host}" "${host}/nscale-offline-root-probe.allowed"
+    printf 'PASS: invalid pre-validation run root retained its validation failure and left no owned residue\n'
+}
+
 self_test_cache_cleanup() {
     local temp="$1"
     local fixture="${temp}/cache-cleanup-fixture"
@@ -1497,7 +1583,7 @@ self_test_signal_cleanup() {
     local signal_host="${temp}/signal-host"
     mkdir -p "${signal_host}"
     chmod 0700 "${signal_host}"
-    PYTHONNOUSERSITE=1 PYTHONPATH= "${PYTHON_BIN}" - \
+    PYTHONNOUSERSITE=1 PYTHONPATH='' "${PYTHON_BIN}" - \
         "${SCRIPT_PATH}" "${signal_host}" "${temp}/signal-children" <<'PY'
 from __future__ import annotations
 
@@ -1571,6 +1657,7 @@ run_self_test() {
     self_test_physical_snapshot "${temp}"
     self_test_secure_temp_roots "${temp}"
     self_test_gate_root_inventory "${temp}"
+    self_test_invalid_run_root_cleanup "${temp}"
     self_test_cache_cleanup "${temp}"
     self_test_signal_cleanup "${temp}"
     fixtures=(

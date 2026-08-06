@@ -64,6 +64,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -168,6 +169,15 @@ def require_tool(name: str) -> str:
     return path
 
 
+def prepare_owned_directory(path: Path, label: str) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail(f"{label} is not a trusted directory: {path}")
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
+        fail(f"{label} is writable or owned by another identity: {path}")
+
+
 # ---------------------------------------------------------------- base image --
 
 def resolve_base_descriptor(base: dict[str, str], target: str) -> str:
@@ -207,20 +217,32 @@ def resolve_base_descriptor(base: dict[str, str], target: str) -> str:
 
 
 def import_base(base: dict[str, str], descriptor: str, cache_dir: Path, target: str) -> Path:
-    """Import the digest-pinned base into a local .sqsh, atomically.
+    """Import the digest-pinned base into a descriptor-bound local cache.
 
     skopeo copies by digest into an OCI archive first, then enroot imports that
     archive. Going through skopeo keeps the digest exact and avoids depending on
     enroot's registry URI supporting `@sha256:` forms.
     """
     slug = base["image"].rsplit("/", 1)[-1]
-    out = cache_dir / f"{slug}+{base['tag']}-{target}.sqsh"
-    if out.exists():
+    descriptor_key = descriptor.replace(":", "-")
+    out = cache_dir / f"{slug}+{base['tag']}-{target}-{descriptor_key}.sqsh"
+    prepare_owned_directory(cache_dir, "base cache directory")
+    try:
+        cached = out.lstat()
+    except FileNotFoundError:
+        cached = None
+    if cached is not None:
+        if (
+            not stat.S_ISREG(cached.st_mode)
+            or cached.st_uid != os.geteuid()
+            or stat.S_IMODE(cached.st_mode) != 0o444
+            or cached.st_nlink != 1
+        ):
+            fail(f"base cache entry is not a trusted regular file: {out}")
         print(f"==> base already imported: {out.name}")
         return out
     skopeo = require_tool("skopeo")
     enroot = require_tool("enroot")
-    cache_dir.mkdir(parents=True, exist_ok=True)
     partial = out.with_suffix(f".sqsh.partial.{os.getpid()}")
     archive = cache_dir / f".oci-archive.{os.getpid()}.tar"
     for stale in (partial, archive):
@@ -230,8 +252,15 @@ def import_base(base: dict[str, str], descriptor: str, cache_dir: Path, target: 
     print("==> importing base into enroot")
     run([enroot, "import", "-o", str(partial), f"oci-archive://{archive}"], "enroot import")
     archive.unlink(missing_ok=True)
-    # mv within one filesystem is atomic, so a reader never sees a partial base.
-    partial.replace(out)
+    imported = partial.lstat()
+    if not stat.S_ISREG(imported.st_mode) or imported.st_uid != os.geteuid() or imported.st_nlink != 1:
+        fail("enroot produced an untrusted base cache entry")
+    partial.chmod(0o444)
+    try:
+        os.link(partial, out, follow_symlinks=False)
+    except FileExistsError:
+        raise BuildError(f"base cache entry appeared during import: {out}") from None
+    partial.unlink()
     return out
 
 
@@ -505,8 +534,9 @@ def main() -> int:
 
     enroot = require_tool("enroot")
     build_root = absolute(args.enroot_build_root, "enroot build root") if args.enroot_build_root else work / ".enroot-build"
+    prepare_owned_directory(build_root, "enroot build root")
     for name in ("data", "cache", "temp", "runtime"):
-        (build_root / name).mkdir(parents=True, exist_ok=True)
+        prepare_owned_directory(build_root / name, f"enroot {name} directory")
     os.environ["ENROOT_DATA_PATH"] = str(build_root / "data")
     os.environ["ENROOT_CACHE_PATH"] = str(build_root / "cache")
     os.environ["ENROOT_TEMP_PATH"] = str(build_root / "temp")

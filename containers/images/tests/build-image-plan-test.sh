@@ -316,6 +316,38 @@ NONPLAN_BUILD_ROOT="${TMP_BASE}/nonplan-build"
 candidate_before="$(snapshot_tree "${CANDIDATE_ROOT}")"
 final_before="$(snapshot_tree "${FINAL_ROOT}")"
 : >"${TOOL_CALL_LOG}"
+mkdir -p "${NONPLAN_BUILD_ROOT}/cache"
+ln -s "${CANDIDATE_ROOT}/sentinel.txt" \
+  "${NONPLAN_BUILD_ROOT}/cache/hpc-benchmarks+26.02-linux-x86_64-v4-sha256-$(printf '1%.0s' {1..64}).sqsh"
+set +e
+env -i \
+  HOME="${HOME_ROOT}" \
+  LC_ALL=C \
+  PATH="${TOOLS_ROOT}:/usr/bin:/bin" \
+  PYTHONPATH="${PYTHON_GUARD_ROOT}" \
+  TMPDIR="${TMP_BASE}" \
+  TOOL_CALL_LOG="${TOOL_CALL_LOG}" \
+  "${PLAN_SCRIPT}" \
+    --base nvidia-vlad \
+    --target linux-x86_64-v4 \
+    --release-dir "${RELEASE_DIR}" \
+    --image-id "${IMAGE_ID}" \
+    --candidate-root "${CANDIDATE_ROOT}" \
+    --enroot-build-root "${NONPLAN_BUILD_ROOT}" \
+    >"${OUTPUT_ROOT}/untrusted-base-cache.out" 2>"${OUTPUT_ROOT}/untrusted-base-cache.err"
+cache_status=$?
+set -e
+if [[ "${cache_status}" -eq 0 ]] || \
+   ! grep -Fq 'base cache entry is not a trusted regular file' "${OUTPUT_ROOT}/untrusted-base-cache.err" || \
+   [[ -s "${TOOL_CALL_LOG}" ]]; then
+  printf 'FAIL: untrusted base cache was not rejected before tool execution\n' >&2
+  cat "${OUTPUT_ROOT}/untrusted-base-cache.err" >&2
+  exit 1
+fi
+rm "${NONPLAN_BUILD_ROOT}/cache/hpc-benchmarks+26.02-linux-x86_64-v4-sha256-$(printf '1%.0s' {1..64}).sqsh"
+printf 'PASS: untrusted descriptor-bound base cache failed closed before tool execution\n'
+
+: >"${TOOL_CALL_LOG}"
 set +e
 env -i \
   HOME="${HOME_ROOT}" \

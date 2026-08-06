@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+# noqa: SIZE_OK - one self-contained security boundary exercises Git and pinned Spack sources
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import copy
 import json
 import os
@@ -34,6 +36,17 @@ class PinnedSources(NamedTuple):
 
 SKIPPED_STATUS: Final = "TARGET_POLICY_SEMANTIC_VALIDATION=SKIPPED reason=source-inputs-not-supplied"
 PASSED_STATUS: Final = f"TARGET_POLICY_SEMANTIC_VALIDATION=PASSED spack_commit={SPACK_COMMIT} spack_packages_commit={PACKAGES_COMMIT}"
+TRUSTED_GIT: Final = "/usr/bin/git"
+TRUSTED_GIT_OPTIONS: Final = (
+    "--no-pager",
+    "--no-replace-objects",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.untrackedCache=false",
+)
 
 
 def pinned_sources(
@@ -54,11 +67,53 @@ def has_exact_probe_output(output: str, expected: str) -> bool:
     return [line for line in output.splitlines() if line.startswith("TARGET_POLICY_SEMANTIC_VALIDATION=")] == [expected]
 
 
+def trusted_git_environment() -> Mapping[str, str]:
+    return {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_MASTER": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
+
+
+def trusted_git_command(path: Path, *arguments: str) -> list[str]:
+    return [TRUSTED_GIT, *TRUSTED_GIT_OPTIONS, "-C", str(path), *arguments]
+
+
 def git_head(path: Path) -> str:
-    environment = os.environ | {"GIT_MASTER": "1", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
-    result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=False, capture_output=True, text=True, timeout=10, env=environment)
+    result = subprocess.run(trusted_git_command(path, "rev-parse", "HEAD"), check=False, capture_output=True, text=True, timeout=10, env=trusted_git_environment())
     require(result.returncode == 0, f"source is not an exact Git checkout: {path}")
     return result.stdout.strip()
+
+
+def git_repository_root(path: Path) -> str:
+    result = subprocess.run(trusted_git_command(path, "rev-parse", "--show-toplevel"), check=False, capture_output=True, text=True, timeout=10, env=trusted_git_environment())
+    require(result.returncode == 0, f"source is not an exact Git checkout: {path}")
+    return result.stdout.strip()
+
+
+def git_status(path: Path) -> bytes:
+    result = subprocess.run(trusted_git_command(path, "status", "--porcelain=v2", "-z", "--untracked-files=all"), check=False, capture_output=True, timeout=10, env=trusted_git_environment())
+    require(result.returncode == 0, f"source is not an exact Git checkout: {path}")
+    return result.stdout
+
+
+def validate_source_identity(path: Path, expected_commit: str, source: str) -> None:
+    require(path.is_absolute() and path == Path(os.path.realpath(path)), "source path must be a canonical absolute repository root")
+    require(git_repository_root(path) == str(path), "source path is not a repository root")
+    require(git_head(path) == expected_commit, f"wrong {source} source commit")
+    require(git_status(path) == b"", f"{source} source worktree is not clean")
+
+
+def validate_pinned_sources(sources: PinnedSources) -> None:
+    validate_source_identity(sources.spack, SPACK_COMMIT, "Spack")
+    validate_source_identity(sources.packages, PACKAGES_COMMIT, "spack-packages")
 
 
 def inject_failure(point: str) -> None:
@@ -67,20 +122,21 @@ def inject_failure(point: str) -> None:
 
 
 def validate_with_spack(yaml_path: Path, packages: dict[str, YamlValue], sources: PinnedSources) -> None:
-    require(git_head(sources.spack) == SPACK_COMMIT, "wrong Spack source commit")
-    require(git_head(sources.packages) == PACKAGES_COMMIT, "wrong spack-packages source commit")
-    exact_packages_path = sources.packages / "repos" / "spack_repo" / "builtin"
-    require((exact_packages_path / "repo.yaml").is_file(), "pinned package repository is malformed")
+    validate_pinned_sources(sources)
     previous_sys_path = tuple(sys.path)
     previous_local_config = os.environ.get("SPACK_DISABLE_LOCAL_CONFIG")
-    sys.path.insert(0, str(sources.spack / "lib" / "spack"))
-    os.environ["SPACK_DISABLE_LOCAL_CONFIG"] = "true"
+    previous_dont_write_bytecode = sys.dont_write_bytecode
 
     def deny_network(event: str, _arguments: tuple[str | int | bytes | None, ...]) -> None:
         if event in {"socket.connect", "socket.connect_ex", "socket.getaddrinfo"}:
             raise PolicyError(f"network access attempted: {event}")
 
     try:
+        exact_packages_path = sources.packages / "repos" / "spack_repo" / "builtin"
+        require((exact_packages_path / "repo.yaml").is_file(), "pinned package repository is malformed")
+        sys.dont_write_bytecode = True
+        sys.path.insert(0, str(sources.spack / "lib" / "spack"))
+        os.environ["SPACK_DISABLE_LOCAL_CONFIG"] = "true"
         sys.addaudithook(deny_network)
         import spack.config
         import spack.repo
@@ -120,10 +176,12 @@ def validate_with_spack(yaml_path: Path, packages: dict[str, YamlValue], sources
             )
     finally:
         sys.path[:] = previous_sys_path
+        sys.dont_write_bytecode = previous_dont_write_bytecode
         if previous_local_config is None:
             os.environ.pop("SPACK_DISABLE_LOCAL_CONFIG", None)
         else:
             os.environ["SPACK_DISABLE_LOCAL_CONFIG"] = previous_local_config
+        validate_pinned_sources(sources)
 
 
 def run_status_probe(yaml_path: Path, targets_path: Path, sources: PinnedSources | None) -> str:
@@ -146,7 +204,51 @@ def run_self_test(sources: PinnedSources | None) -> str:
     require(not remaining_solver_tokens, f"forbidden solver token remains: {', '.join(remaining_solver_tokens)}")
     require("REFERENCE" + "_ROOT" not in source, "hidden pinned-source default remains")
     with tempfile.TemporaryDirectory(prefix="vlad-target-policy-") as directory:
-        root = Path(directory)
+        root = Path(directory).resolve()
+        identity_clean = root / "identity-clean"
+        identity_clean.mkdir()
+        subprocess.run(["git", "-C", str(identity_clean), "init", "--quiet"], check=True, timeout=10)
+        tracked = identity_clean / "tracked.txt"
+        tracked.write_text("clean\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(identity_clean), "add", "tracked.txt"], check=True, timeout=10)
+        subprocess.run(["git", "-C", str(identity_clean), "-c", "commit.gpgsign=false", "-c", "user.name=target-policy", "-c", "user.email=target-policy@example.invalid", "commit", "--quiet", "-m", "initial"], check=True, timeout=10)
+        identity_commit = git_head(identity_clean)
+        validate_source_identity(identity_clean, identity_commit, "fixture")
+        identity_subdirectory = identity_clean / "subdirectory"
+        identity_subdirectory.mkdir()
+        identity_staged = root / "identity-staged"
+        identity_unstaged = root / "identity-unstaged"
+        identity_untracked = root / "identity-untracked"
+        for identity_path in (identity_staged, identity_unstaged, identity_untracked):
+            subprocess.run(["git", "clone", "--quiet", str(identity_clean), str(identity_path)], check=True, timeout=10)
+        (identity_staged / "tracked.txt").write_text("staged\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(identity_staged), "add", "tracked.txt"], check=True, timeout=10)
+        (identity_unstaged / "tracked.txt").write_text("unstaged\n", encoding="utf-8")
+        (identity_untracked / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+        identity_alias = root / "identity-alias"
+        identity_alias.symlink_to(identity_clean, target_is_directory=True)
+        fsmonitor_marker = root / "fsmonitor-executed"
+        fsmonitor_hook = root / "fsmonitor-hook.sh"
+        fsmonitor_hook.write_text(f"#!/bin/sh\nprintf executed >{fsmonitor_marker}\n", encoding="utf-8")
+        fsmonitor_hook.chmod(0o755)
+        subprocess.run(["git", "-C", str(identity_clean), "config", "core.fsmonitor", str(fsmonitor_hook)], check=True, timeout=10)
+        validate_source_identity(identity_clean, identity_commit, "fixture")
+        require(not fsmonitor_marker.exists(), "source identity validation executed repository-local fsmonitor code")
+        identity_cases = (
+            (identity_subdirectory, identity_commit, "repository root"),
+            (identity_staged, identity_commit, "worktree is not clean"),
+            (identity_unstaged, identity_commit, "worktree is not clean"),
+            (identity_untracked, identity_commit, "worktree is not clean"),
+            (identity_clean, "0" * 40, "wrong fixture source commit"),
+            (identity_alias, identity_commit, "canonical absolute repository root"),
+        )
+        for identity_path, expected_commit, expected in identity_cases:
+            try:
+                validate_source_identity(identity_path, expected_commit, "fixture")
+            except PolicyError as error:
+                require(expected in str(error), f"identity fixture did not reject {expected}")
+            else:
+                require(False, f"identity fixture accepted {identity_path}")
         targets = root / "targets.json"
         targets.write_text(json.dumps({"targets": {"linux-x86_64-v4": {"native_arch": "x86_64", "spack_target": "x86_64_v4"}, "linux-aarch64-gb300": {"native_arch": "aarch64", "spack_target": "aarch64"}}}), encoding="utf-8")
         malformed, wrong, missing, mutated, valid = (root / name for name in ("malformed.yaml", "wrong.yaml", "missing.yaml", "mutated.yaml", "valid.yaml"))
