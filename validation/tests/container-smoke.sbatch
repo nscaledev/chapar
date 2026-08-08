@@ -6,7 +6,7 @@
 #SBATCH --job-name=container-smoke
 
 # Runs the selected release from inside its sealed .sqsh under Pyxis. This is the
-# only validation test that exercises a container, and it is the source of the
+# only validation suite that exercises a container, and it is the source of the
 # pyxis-smoke.txt artifact that ci/vlad_source_approval/image_receipts.py digests
 # into the runtime receipt.
 #
@@ -14,42 +14,63 @@
 # root and match a digest supplied alongside it. An ambient path is refused, the
 # same way every other consumer refuses ambient authority.
 #
-# Exit 77 means SKIP: this node advertises no Pyxis/Enroot, so there is nothing to
-# validate here. Never a pass.
+# Fixture mode evaluates a recorded in-container observation instead, so the
+# evaluator below is exercised in CI with no image, no enroot and no GPU. The
+# evaluation is the same code either way -- only where `observed` comes from
+# differs.
 
 set -euo pipefail
 
-validation_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+validation_dir="$(cd "${script_dir}/.." && pwd)"
 repository_root="$(cd "${validation_dir}/.." && pwd)"
+# shellcheck source=validation/lib/verdict.sh
+source "${validation_dir}/lib/verdict.sh"
+# shellcheck source=validation/lib/result-manifest.sh
+source "${validation_dir}/lib/result-manifest.sh"
+# shellcheck source=validation/lib/fixture-mode.sh
+source "${validation_dir}/lib/fixture-mode.sh"
+
 if [ -n "${ENV_NAME:-}" ] || [ -n "${MODULE_PATH:-}" ]; then
     echo "ERROR: ENV_NAME and MODULE_PATH are obsolete selection overrides" >&2
     exit 2
 fi
-selection="${CHAPAR_SELECTION:?CHAPAR_SELECTION is required}"
-selection_digest="${CHAPAR_SELECTION_DIGEST:?CHAPAR_SELECTION_DIGEST is required}"
-contract="${CHAPAR_TARGET_CONTRACT:?CHAPAR_TARGET_CONTRACT is required}"
-# A sealed image is an input this test cannot derive, and no image exists until an
-# operator has produced and sealed one. Absent, there is nothing to validate, so
-# this is a SKIP -- the same treatment a node that advertises no Pyxis gets.
-if [ -z "${CHAPAR_CONTAINER_IMAGE:-}" ] || [ -z "${CHAPAR_CONTAINER_IMAGE_SHA256:-}" ]; then
-    echo "SKIP: CHAPAR_CONTAINER_IMAGE and CHAPAR_CONTAINER_IMAGE_SHA256 are unset" >&2
-    exit 77
+validation_fixture_guard
+fixture="$(validation_fixture_dir VALIDATION_TEST_CONTAINER_SMOKE)"
+
+if [ -z "${fixture}" ]; then
+    # Live runs go through the authority gateway: a verified selection, the
+    # canonical contract, and the tuple they agree on.
+    selection="${CHAPAR_SELECTION:?CHAPAR_SELECTION is required}"
+    selection_digest="${CHAPAR_SELECTION_DIGEST:?CHAPAR_SELECTION_DIGEST is required}"
+    contract="${CHAPAR_TARGET_CONTRACT:?CHAPAR_TARGET_CONTRACT is required}"
+    identity="$(python3 "${validation_dir}/selection.py" shell --selection "${selection}" --selection-digest "${selection_digest}" --contract "${contract}" --test container-smoke)"
+    IFS=$'\t' read -r datacenter software_set target _module_path result_namespace _partition _constraint _account _qos <<< "${identity}"
+    results_root="${RESULTS_ROOT:-${result_namespace}}"
+else
+    # Fixture runs evaluate a recorded observation, so they deliberately do not
+    # consult the selection: there is no release, no image and no tuple to verify,
+    # and requiring one would make the evaluator untestable without a resolver.
+    datacenter=fixture
+    software_set=fixture
+    target=fixture
+    results_root="${RESULTS_ROOT:?RESULTS_ROOT is required in fixture mode}"
 fi
-image="${CHAPAR_CONTAINER_IMAGE}"
-image_sha256="${CHAPAR_CONTAINER_IMAGE_SHA256}"
-
-identity="$(python3 "$validation_dir/selection.py" shell --selection "$selection" --selection-digest "$selection_digest" --contract "$contract" --test container-smoke)"
-IFS=$'\t' read -r datacenter software_set target _module_path result_namespace _partition _constraint _account _qos <<< "$identity"
-run_id="${SLURM_JOB_ID:-unknown-run}"
 node="${SLURM_NODELIST:-$(hostname -s)}"
-RESULTS_DIR="${RESULTS_ROOT:-$result_namespace}/container-smoke/${run_id}/${node}"
-mkdir -p "${RESULTS_DIR}"
-SUMMARY="${RESULTS_DIR}/summary.json"
-SMOKE="${RESULTS_DIR}/pyxis-smoke.txt"
 
-# The in-image module destination is a container-registry fact, and the outputs
-# root is a selection fact. Neither is re-derived from the environment.
-read -r container_outputs module_destination <<< "$(python3 - "$selection" "$repository_root/containers/images/containers.json" <<'PY'
+validation_result_init container-smoke "${results_root}" "${node}"
+results_dir="${VALIDATION_NODE_DIR}"
+observed_path="${results_dir}/container_observed.json"
+smoke_path="${results_dir}/pyxis-smoke.txt"
+report_path="${results_dir}/container_smoke.json"
+
+container_outputs=""
+module_destination=""
+store=""
+if [ -z "${fixture}" ]; then
+    # The in-image module destination is a container-registry fact, and the outputs
+    # root is a selection fact. Neither is re-derived from the environment.
+    read -r container_outputs module_destination store <<< "$(python3 - "${selection}" "${repository_root}/containers/images/containers.json" <<'PY'
 import json
 import sys
 
@@ -58,153 +79,238 @@ registry = json.load(open(sys.argv[2]))["containers"]
 selected = selection["containers"]
 if len(selected) != 1:
     raise SystemExit("selection must name exactly one container for a container smoke test")
-print(selection["paths"]["container_outputs"], registry[selected[0]]["module_destination"])
+print(
+    selection["paths"]["container_outputs"],
+    registry[selected[0]]["module_destination"],
+    selection["paths"]["install_tree"],
+)
 PY
 )"
-
-case "$image" in
-    "${container_outputs}"/*) ;;
-    *)
-        echo "ERROR: container image is outside the selected container_outputs root" >&2
-        exit 2
-        ;;
-esac
-if [ -L "$image" ] || [ ! -f "$image" ]; then
-    echo "ERROR: container image must be a regular file, not a symlink: $image" >&2
-    exit 2
-fi
-observed="$(sha256sum "$image" | awk '{print $1}')"
-if [ "$observed" != "$image_sha256" ]; then
-    echo "ERROR: container image digest mismatch" >&2
-    exit 2
-fi
-
-if ! command -v enroot >/dev/null 2>&1; then
-    echo "SKIP: node advertises no enroot runtime" >&2
-    exit 77
-fi
-if ! srun --help 2>&1 | grep -q -- '--container-image'; then
-    echo "SKIP: node advertises no Pyxis SPANK plugin" >&2
-    exit 77
-fi
-
-echo "=== $datacenter/$software_set/$target container smoke ===" >&2
-echo "image: $image" >&2
-echo "sha256: $observed" >&2
-
-# Root module checks come from the selection, so this asserts the same inventory
-# the bare-metal integrity test asserts -- just resolved inside the container.
-checks_file="${RESULTS_DIR}/root-checks.tsv"
-python3 "$validation_dir/selection.py" checks \
-    --selection "$selection" --selection-digest "$selection_digest" \
-    --contract "$contract" --test container-smoke >"$checks_file"
-
-in_container="$(cat <<INNER
-set -u
-status=0
-note() { printf '%s\n' "\$1"; }
-
-# --- the base image must be intact and must still win by default -------------
-note "== base image =="
-for tool in python3 mpirun nvcc cmake; do
-    resolved="\$(command -v "\$tool" 2>/dev/null || true)"
-    case "\$resolved" in
-        "") note "absent: \$tool" ;;
-        ${module_destination}/*)
-            note "SHADOWED: \$tool -> \$resolved"
-            status=1 ;;
-        *) note "base: \$tool -> \$resolved" ;;
+    if [ -z "${CHAPAR_CONTAINER_IMAGE:-}" ] || [ -z "${CHAPAR_CONTAINER_IMAGE_SHA256:-}" ]; then
+        validation_resource_unavailable 'no sealed container image was supplied' optional
+    fi
+    image="${CHAPAR_CONTAINER_IMAGE}"
+    image_sha256="${CHAPAR_CONTAINER_IMAGE_SHA256}"
+    case "${image}" in
+        "${container_outputs}"/*) ;;
+        *)
+            validation_set_verdict FAIL 'container image is outside the selected container_outputs root'
+            exit 1
+            ;;
     esac
+    if [ -L "${image}" ] || [ ! -f "${image}" ]; then
+        validation_set_verdict FAIL "container image must be a regular file, not a symlink: ${image}"
+        exit 1
+    fi
+    image_digest="$(sha256sum "${image}" | awk '{print $1}')"
+    if [ "${image_digest}" != "${image_sha256}" ]; then
+        validation_set_verdict FAIL 'container image digest mismatch'
+        exit 1
+    fi
+    command -v enroot >/dev/null 2>&1 || validation_resource_unavailable 'enroot runtime' optional
+    srun --help 2>&1 | grep -q -- '--container-image' || validation_resource_unavailable 'Pyxis SPANK plugin' optional
+
+    # Root module checks come from the selection, so this asserts the same
+    # inventory the bare-metal integrity suite asserts, resolved in the container.
+    python3 "${validation_dir}/selection.py" checks \
+        --selection "${selection}" --selection-digest "${selection_digest}" \
+        --contract "${contract}" --test container-smoke > "${results_dir}/root-checks.tsv"
+
+    # The checks file lives on the host, so it has to be mounted in: a container
+    # cannot read a host path merely because the suite knows its name.
+    cat > "${results_dir}/in-container.sh" <<'INNER'
+set -u
+emit() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}"; }
+
+for tool in python3 mpirun nvcc cmake; do
+    resolved="$(command -v "$tool" 2>/dev/null || true)"
+    emit base_tool "$tool" "$resolved"
 done
 
-# --- opt-in activation --------------------------------------------------------
-note "== activation =="
-if ! command -v module >/dev/null 2>&1; then
-    note "FAIL: no module command in the image"
-    exit 1
+if command -v module >/dev/null 2>&1; then
+    emit module_command present true
+else
+    emit module_command present false
 fi
-module use "${module_destination}"/* 2>/dev/null || true
-note "modulepath: \${MODULEPATH:-unset}"
 
-while IFS=\$'\t' read -r module_name check_cmd check_desc; do
-    [ -n "\$module_name" ] || continue
-    printf '  %s (%s) ... ' "\$module_name" "\$check_desc"
-    if module load "\$module_name" 2>/dev/null && eval "\$check_cmd" >/dev/null 2>&1; then
-        printf 'PASS\n'
+emit modulefiles count "$(find "$CHAPAR_MODULE_DESTINATION" -type f 2>/dev/null | wc -l | tr -d ' ')"
+
+# shellcheck disable=SC1090
+if command -v module >/dev/null 2>&1; then
+    for arch_dir in "$CHAPAR_MODULE_DESTINATION"/*; do
+        [ -d "$arch_dir" ] || continue
+        module use "$arch_dir" 2>/dev/null || true
+    done
+fi
+
+while IFS="$(printf '\t')" read -r module_name check_cmd _description; do
+    [ -n "$module_name" ] || continue
+    if command -v module >/dev/null 2>&1 && module load "$module_name" 2>/dev/null && eval "$check_cmd" >/dev/null 2>&1; then
+        emit root_check "$module_name" pass
     else
-        printf 'FAIL\n'
-        status=1
+        emit root_check "$module_name" fail
     fi
-done <"$checks_file"
+done < /chapar-validation/root-checks.tsv
 
-# --- accelerated transports, from inside the container ------------------------
-# Mirrors validation/tests/transport.sbatch. The kernel-coupled halves come from
-# the host (/dev/infiniband, /dev/gdrdrv, the NVIDIA driver); the userspace halves
-# must come from the injected release, so this is where the split is proven.
-note "== transports =="
 if command -v ucx_info >/dev/null 2>&1; then
-    transports="\$(ucx_info -d 2>/dev/null || true)"
+    transports="$(ucx_info -d 2>/dev/null || true)"
     for expected in _mlx5 cuda_ipc gdr_copy; do
-        if printf '%s' "\$transports" | grep -q -- "\$expected"; then
-            note "ucx: \$expected present"
+        if printf '%s' "$transports" | grep -q -- "$expected"; then
+            emit ucx "$expected" present
         else
-            note "FAIL ucx: \$expected absent"
-            status=1
+            emit ucx "$expected" absent
         fi
     done
 else
-    note "FAIL: ucx_info unavailable after module load"
-    status=1
+    emit ucx tool absent
 fi
+
 if command -v fi_info >/dev/null 2>&1; then
-    providers="\$(fi_info 2>/dev/null || true)"
+    providers="$(fi_info 2>/dev/null || true)"
     for expected in verbs shm; do
-        if printf '%s' "\$providers" | grep -q -- "\$expected"; then
-            note "libfabric: \$expected present"
+        if printf '%s' "$providers" | grep -q -- "$expected"; then
+            emit libfabric "$expected" present
         else
-            note "FAIL libfabric: \$expected absent"
-            status=1
+            emit libfabric "$expected" absent
         fi
     done
 else
-    note "FAIL: fi_info unavailable after module load"
-    status=1
+    emit libfabric tool absent
 fi
-exit "\$status"
 INNER
-)"
 
-rc=0
-srun --container-image="$image" \
-     --container-readonly \
-     --no-container-mount-home \
-     --export=ALL,PYTHONNOUSERSITE=1 \
-     bash -c "$in_container" >"$SMOKE" 2>&1 || rc=$?
-cat "$SMOKE" >&2
-
-verdict=pass
-[ "$rc" -eq 0 ] || verdict=fail
-python3 - "$SUMMARY" "$datacenter" "$software_set" "$target" "$image" "$observed" "$verdict" "$rc" <<'PY'
+    srun_status=0
+    srun --container-image="${image}" \
+        --container-readonly \
+        --no-container-mount-home \
+        --container-mounts="${results_dir}:/chapar-validation:ro" \
+        --export=ALL,PYTHONNOUSERSITE=1,CHAPAR_MODULE_DESTINATION="${module_destination}",CHAPAR_STORE="${store}" \
+        bash /chapar-validation/in-container.sh > "${smoke_path}" 2>&1 || srun_status=$?
+    if [ "${srun_status}" -ne 0 ]; then
+        validation_set_verdict FAIL "in-container smoke run exited ${srun_status}"
+    fi
+    python3 - "${smoke_path}" "${module_destination}" "${store}" > "${observed_path}" <<'PY'
 import json
 import sys
 
-path, datacenter, software_set, target, image, digest, verdict, rc = sys.argv[1:]
-json.dump(
-    {
-        "test": "container-smoke",
-        "datacenter": datacenter,
-        "software_set": software_set,
-        "target": target,
-        "image_path": image,
-        "image_sha256": digest,
-        "verdict": verdict,
-        "exit_code": int(rc),
-    },
-    open(path, "w"),
-    indent=2,
-    sort_keys=True,
-)
+records = []
+with open(sys.argv[1], encoding="utf-8", errors="replace") as stream:
+    for line in stream:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) == 3:
+            records.append(parts)
+observed = {
+    "base_tools": [
+        {"tool": name, "resolved": value} for kind, name, value in records if kind == "base_tool"
+    ],
+    "module_command": any(
+        value == "true" for kind, _name, value in records if kind == "module_command"
+    ),
+    "modulefiles": next(
+        (int(value) for kind, _name, value in records if kind == "modulefiles" and value.isdigit()),
+        0,
+    ),
+    "root_checks": [
+        {"module": name, "result": value} for kind, name, value in records if kind == "root_check"
+    ],
+    "ucx": {name: value for kind, name, value in records if kind == "ucx"},
+    "libfabric": {name: value for kind, name, value in records if kind == "libfabric"},
+    "module_destination": sys.argv[2],
+    "store": sys.argv[3],
+}
+print(json.dumps(observed, indent=2, sort_keys=True))
 PY
-cat "$SUMMARY"
-echo "=== $datacenter/$software_set/$target container smoke: $verdict ===" >&2
-exit "$rc"
+else
+    python3 - "${fixture}/manifest.json" > "${observed_path}" <<'PY'
+import json
+import sys
+
+document = json.load(open(sys.argv[1]))
+print(json.dumps(document["container_observed"], indent=2, sort_keys=True))
+PY
+fi
+
+# One evaluator for both paths.
+python3 - "${observed_path}" "${report_path}" "${fixture}" "${datacenter}" "${software_set}" "${target}" <<'PY'
+import json
+import sys
+
+observed_path, report_path, fixture, datacenter, software_set, target = sys.argv[1:]
+observed = json.load(open(observed_path))
+failures: list[str] = []
+warnings: list[str] = []
+
+module_destination = observed.get("module_destination", "")
+store = observed.get("store", "")
+
+# The base image must still win by default: a release that shadowed the image's own
+# interpreters on the default PATH would pass every positive check while breaking
+# the software the image exists to provide.
+for entry in observed.get("base_tools", []):
+    resolved = entry.get("resolved") or ""
+    if not resolved:
+        continue
+    for injected in (module_destination, store):
+        if injected and resolved.startswith(injected):
+            failures.append(f"{entry['tool']} resolves to {resolved} before any module load")
+
+if not observed.get("module_command"):
+    failures.append("no module command inside the image")
+if not observed.get("modulefiles"):
+    failures.append("no modulefiles at the registry module destination")
+
+root_checks = observed.get("root_checks", [])
+if not root_checks:
+    failures.append("no root module checks were evaluated")
+for check in root_checks:
+    if check.get("result") != "pass":
+        failures.append(f"root module check failed: {check.get('module')}")
+
+# The kernel-coupled halves of the transports come from the host; the userspace
+# halves must come from the injected release, so this is where the split is proven.
+ucx = observed.get("ucx", {})
+if ucx.get("tool") == "absent":
+    failures.append("ucx_info unavailable after module load")
+else:
+    for expected in ("_mlx5", "cuda_ipc", "gdr_copy"):
+        if ucx.get(expected) != "present":
+            failures.append(f"ucx transport absent: {expected}")
+libfabric = observed.get("libfabric", {})
+if libfabric.get("tool") == "absent":
+    failures.append("fi_info unavailable after module load")
+else:
+    for expected in ("verbs", "shm"):
+        if libfabric.get(expected) != "present":
+            failures.append(f"libfabric provider absent: {expected}")
+
+verdict = "FAIL" if failures else ("WARN" if warnings else "PASS")
+if fixture:
+    declared = json.load(open(f"{fixture}/manifest.json")).get("verdicts", {}).get("container-smoke", "")
+    if declared and declared != verdict:
+        failures.append(f"fixture declared {declared} but validation produced {verdict}")
+        verdict = "FAIL"
+
+report = {
+    "suite": "container-smoke",
+    "datacenter": datacenter,
+    "software_set": software_set,
+    "target": target,
+    "fixture": fixture or None,
+    "observed": observed,
+    "failures": failures,
+    "warnings": warnings,
+    "verdict": verdict,
+}
+with open(report_path, "w", encoding="utf-8") as stream:
+    json.dump(report, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+print(verdict)
+PY
+
+verdict="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['verdict'])" "${report_path}")"
+reason="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('; '.join(d['failures'] or d['warnings']))" "${report_path}")"
+case "${verdict}" in
+    FAIL) validation_threshold_violation "${reason}" ;;
+    WARN) validation_set_verdict WARN "${reason}" ;;
+    SKIP) validation_resource_unavailable 'container smoke reported SKIP' optional ;;
+esac
