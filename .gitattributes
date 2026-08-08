@@ -1,0 +1,16 @@
+# The brave-search skill ships a vendored third-party Node tool: search.js,
+# content.js and their npm manifests are MIT-licensed work by Mario Zechner, not
+# Chapar code. Nothing in envs/, containers/, ci/, tools/ or validation/ executes
+# them; they are agent tooling that happens to live in this repository.
+#
+# Marking them vendored keeps GitHub's language detection describing what this
+# repository actually is.
+#
+# It does not fix the failing javascript-typescript code-scanning job, and was
+# tested: repository language statistics are computed from the default branch, and
+# the default-setup language list is stored explicitly rather than re-derived from
+# detection. That job fails on every pull request because commit 130df27 moved
+# these files from agents/ to .agents/ and CodeQL excludes dot-directories, so the
+# language has no source to analyse. Correcting it needs the language dropped from
+# the organisation's code-scanning configuration.
+.agents/skills/brave-search/** linguist-vendored
