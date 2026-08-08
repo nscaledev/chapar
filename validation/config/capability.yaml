@@ -21,6 +21,9 @@ cpu:
   required_features: []
   numa_nodes: 1
   pci_devices: 1
+  # Binaries whose ELF machine must match the host ISA. Empty means the check is
+  # not evaluated, which the suite reports as a WARN rather than a silent pass.
+  elf_paths: []
 
 node:
   # node-admission inventory expectations. Omit a key to leave it uncompared.

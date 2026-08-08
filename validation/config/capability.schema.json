@@ -17,7 +17,14 @@
         "vendor": {"enum": ["amd", "generic", "intel", "nvidia"]},
         "required_features": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 64}},
         "numa_nodes": {"type": "integer", "minimum": 1, "maximum": 512},
-        "pci_devices": {"type": "integer", "minimum": 0, "maximum": 65536}
+        "pci_devices": {"type": "integer", "minimum": 0, "maximum": 65536},
+        "elf_paths": {
+          "description": "Absolute paths whose ELF machine must match the host ISA. Machine compatibility only -- microarchitecture is never inferred from a binary.",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 32,
+          "items": {"type": "string", "pattern": "^/[^\\u0000]{1,255}$"}
+        }
       },
       "allOf": [
         {
