@@ -1,0 +1,48 @@
+{
+  "expectations": {
+    "fabric": "infiniband",
+    "gpu": {
+      "accelerator": {
+        "kind": "gpu",
+        "vendor": "nvidia"
+      },
+      "gpus_per_node": 8,
+      "interconnect": "pcie",
+      "minimum_links_per_gpu": 0,
+      "minimum_p2p_gbps": 100,
+      "models": [
+        "NVIDIA H100"
+      ],
+      "require_nvls": false
+    }
+  },
+  "p2p_observed": {
+    "commands": {
+      "nvbandwidth": true,
+      "nvidia-smi": true
+    },
+    "counter_after": "GPU 0: Link 0: 0",
+    "counter_before": "GPU 0: Link 0: 0",
+    "error_after": "GPU 0: Link 0: 0",
+    "error_before": "GPU 0: Link 0: 0",
+    "fabric_manager": "active",
+    "full_gpu_allocation": true,
+    "nvbandwidth": "Aggregate bandwidth 24.0 GB/s",
+    "p2p_matrix": "X\tOK\tOK\tOK\tOK\tOK\tOK\tOK\nOK\tX\tOK\tOK\tOK\tOK\tOK\tOK\nOK\tOK\tX\tOK\tOK\tOK\tOK\tOK\nOK\tOK\tOK\tX\tOK\tOK\tOK\tOK\nOK\tOK\tOK\tOK\tX\tOK\tOK\tOK\nOK\tOK\tOK\tOK\tOK\tX\tOK\tOK\nOK\tOK\tOK\tOK\tOK\tOK\tX\tOK\nOK\tOK\tOK\tOK\tOK\tOK\tOK\tX"
+  },
+  "topology_observed": {
+    "commands": {
+      "nvidia-smi": true
+    },
+    "full_gpu_allocation": true,
+    "nvidia_smi_l": "GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-0)\nGPU 1: NVIDIA H100 80GB HBM3 (UUID: GPU-1)\nGPU 2: NVIDIA H100 80GB HBM3 (UUID: GPU-2)\nGPU 3: NVIDIA H100 80GB HBM3 (UUID: GPU-3)\nGPU 4: NVIDIA H100 80GB HBM3 (UUID: GPU-4)\nGPU 5: NVIDIA H100 80GB HBM3 (UUID: GPU-5)\nGPU 6: NVIDIA H100 80GB HBM3 (UUID: GPU-6)\nGPU 7: NVIDIA H100 80GB HBM3 (UUID: GPU-7)",
+    "nvlink_counters": "GPU 0: Link 0: 1000",
+    "nvlink_errors": "",
+    "nvlink_status": "",
+    "topo_m": "X\tSYS\tSYS\tSYS\tSYS\tSYS\tSYS\tSYS\nSYS\tX\tSYS\tSYS\tSYS\tSYS\tSYS\tSYS\nSYS\tSYS\tX\tSYS\tSYS\tSYS\tSYS\tSYS\nSYS\tSYS\tSYS\tX\tSYS\tSYS\tSYS\tSYS\nSYS\tSYS\tSYS\tSYS\tX\tSYS\tSYS\tSYS\nSYS\tSYS\tSYS\tSYS\tSYS\tX\tSYS\tSYS\nSYS\tSYS\tSYS\tSYS\tSYS\tSYS\tX\tSYS\nSYS\tSYS\tSYS\tSYS\tSYS\tSYS\tSYS\tX"
+  },
+  "verdicts": {
+    "gpu-topology": "PASS",
+    "nvlink-p2p": "FAIL"
+  }
+}

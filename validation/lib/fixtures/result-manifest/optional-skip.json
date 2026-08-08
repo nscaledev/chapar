@@ -1,0 +1,22 @@
+{
+  "artifacts": {
+    "prometheus": "suite.prom",
+    "summary": "summary.json"
+  },
+  "generated_at": "2026-07-30T12:01:00Z",
+  "kind": "suite",
+  "policies": {
+    "threshold": "fail",
+    "unavailable": "skip"
+  },
+  "provenance": {
+    "ci_authoritative": true,
+    "mode": "runner"
+  },
+  "reason": "optional resource unavailable: no InfiniBand HCA",
+  "run_id": "fixture-skip-001",
+  "run_issued_at": "2026-07-30T12:00:00Z",
+  "schema_version": "1.0",
+  "suite": "rdma-link-check",
+  "verdict": "SKIP"
+}

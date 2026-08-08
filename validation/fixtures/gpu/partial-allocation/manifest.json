@@ -1,0 +1,48 @@
+{
+  "expectations": {
+    "fabric": "infiniband",
+    "gpu": {
+      "accelerator": {
+        "kind": "gpu",
+        "vendor": "nvidia"
+      },
+      "gpus_per_node": 8,
+      "interconnect": "nvswitch",
+      "minimum_links_per_gpu": 1,
+      "minimum_p2p_gbps": 100,
+      "models": [
+        "NVIDIA H100"
+      ],
+      "require_nvls": true
+    }
+  },
+  "p2p_observed": {
+    "commands": {
+      "nvbandwidth": true,
+      "nvidia-smi": true
+    },
+    "counter_after": "GPU 0: Link 0: 0",
+    "counter_before": "GPU 0: Link 0: 0",
+    "error_after": "GPU 0: Link 0: 0",
+    "error_before": "GPU 0: Link 0: 0",
+    "fabric_manager": "active",
+    "full_gpu_allocation": false,
+    "nvbandwidth": "Aggregate bandwidth 350.5 GB/s",
+    "p2p_matrix": "X\tOK\tOK\tOK\tOK\tOK\tOK\tOK\nOK\tX\tOK\tOK\tOK\tOK\tOK\tOK\nOK\tOK\tX\tOK\tOK\tOK\tOK\tOK\nOK\tOK\tOK\tX\tOK\tOK\tOK\tOK\nOK\tOK\tOK\tOK\tX\tOK\tOK\tOK\nOK\tOK\tOK\tOK\tOK\tX\tOK\tOK\nOK\tOK\tOK\tOK\tOK\tOK\tX\tOK\nOK\tOK\tOK\tOK\tOK\tOK\tOK\tX"
+  },
+  "topology_observed": {
+    "commands": {
+      "nvidia-smi": true
+    },
+    "full_gpu_allocation": false,
+    "nvidia_smi_l": "GPU 0: NVIDIA H100 80GB HBM3 (UUID: GPU-0)\nGPU 1: NVIDIA H100 80GB HBM3 (UUID: GPU-1)\nGPU 2: NVIDIA H100 80GB HBM3 (UUID: GPU-2)\nGPU 3: NVIDIA H100 80GB HBM3 (UUID: GPU-3)\nGPU 4: NVIDIA H100 80GB HBM3 (UUID: GPU-4)\nGPU 5: NVIDIA H100 80GB HBM3 (UUID: GPU-5)\nGPU 6: NVIDIA H100 80GB HBM3 (UUID: GPU-6)\nGPU 7: NVIDIA H100 80GB HBM3 (UUID: GPU-7)",
+    "nvlink_counters": "GPU 0: Link 0: 1000",
+    "nvlink_errors": "",
+    "nvlink_status": "GPU 0: Link 0: Active\nGPU 1: Link 0: Active\nGPU 2: Link 0: Active\nGPU 3: Link 0: Active\nGPU 4: Link 0: Active\nGPU 5: Link 0: Active\nGPU 6: Link 0: Active\nGPU 7: Link 0: Active",
+    "topo_m": "X\tNV18\tNV18\tNV18\tNV18\tNV18\tNV18\tNV18\nNV18\tX\tNV18\tNV18\tNV18\tNV18\tNV18\tNV18\nNV18\tNV18\tX\tNV18\tNV18\tNV18\tNV18\tNV18\nNV18\tNV18\tNV18\tX\tNV18\tNV18\tNV18\tNV18\nNV18\tNV18\tNV18\tNV18\tX\tNV18\tNV18\tNV18\nNV18\tNV18\tNV18\tNV18\tNV18\tX\tNV18\tNV18\nNV18\tNV18\tNV18\tNV18\tNV18\tNV18\tX\tNV18\nNV18\tNV18\tNV18\tNV18\tNV18\tNV18\tNV18\tX"
+  },
+  "verdicts": {
+    "gpu-topology": "FAIL",
+    "nvlink-p2p": "FAIL"
+  }
+}

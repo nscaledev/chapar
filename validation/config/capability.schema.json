@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nscaledev.github.io/chapar/schemas/validation-capability/v1",
+  "title": "Chapar validation capability expectations",
+  "description": "Per-cluster hardware expectations compared against observations by the capability suites. Fail-closed: an expectation that cannot be expressed here cannot be asserted by a suite.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fabric"],
+  "properties": {
+    "fabric": {"enum": ["ethernet", "infiniband", "roce"]},
+    "cpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "vendor"],
+      "properties": {
+        "platform": {"enum": ["amd-x86", "generic", "intel-x86", "nvidia-grace"]},
+        "vendor": {"enum": ["amd", "generic", "intel", "nvidia"]},
+        "required_features": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 64}},
+        "numa_nodes": {"type": "integer", "minimum": 1, "maximum": 512},
+        "pci_devices": {"type": "integer", "minimum": 0, "maximum": 65536},
+        "elf_paths": {
+          "description": "Absolute paths whose ELF machine must match the host ISA. Machine compatibility only -- microarchitecture is never inferred from a binary.",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 32,
+          "items": {"type": "string", "pattern": "^/[^\\u0000]{1,255}$"}
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "A Grace platform is aarch64 and NVIDIA by construction; allowing any other vendor would let a suite assert a combination that cannot exist.",
+          "if": {"properties": {"platform": {"const": "nvidia-grace"}}, "required": ["platform"]},
+          "then": {"properties": {"vendor": {"const": "nvidia"}}}
+        }
+      ]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expected_cpus": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "expected_gpus": {"type": "integer", "minimum": 0, "maximum": 16},
+        "expected_ib_nics": {"type": "integer", "minimum": 0, "maximum": 32}
+      }
+    },
+    "gpu": {"$ref": "#/$defs/gpu"},
+    "rdma": {"$ref": "#/$defs/rdma"},
+    "roce": {"$ref": "#/$defs/roce"},
+    "storage": {"$ref": "#/$defs/storage"}
+  },
+  "allOf": [
+    {
+      "$comment": "rocev2-pairwise has nothing to compare without the endpoint tuple, so a RoCE fabric must declare one.",
+      "if": {"properties": {"fabric": {"const": "roce"}}, "required": ["fabric"]},
+      "then": {"required": ["roce"]}
+    },
+    {
+      "$comment": "Likewise rdma-link-check on InfiniBand.",
+      "if": {"properties": {"fabric": {"const": "infiniband"}}, "required": ["fabric"]},
+      "then": {"required": ["rdma"]}
+    },
+    {
+      "$comment": "An NVIDIA accelerator implies gpu-topology and nvlink-p2p have expectations to read. Every level needs its own `required`: without it an absent vendor satisfies the condition vacuously and a CPU-only cluster is told to declare an interconnect.",
+      "if": {
+        "required": ["gpu"],
+        "properties": {
+          "gpu": {
+            "required": ["accelerator"],
+            "properties": {
+              "accelerator": {
+                "required": ["vendor"],
+                "properties": {"vendor": {"const": "nvidia"}}
+              }
+            }
+          }
+        }
+      },
+      "then": {"properties": {"gpu": {"required": ["models", "interconnect"]}}}
+    }
+  ],
+  "$defs": {
+    "counter_limits": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "pattern_string": {"type": "string", "minLength": 1, "maxLength": 128},
+    "gpu": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gpus_per_node", "accelerator"],
+      "properties": {
+        "gpus_per_node": {"type": "integer", "minimum": 0, "maximum": 16},
+        "accelerator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {"enum": ["gpu", "none"]},
+            "vendor": {"enum": ["amd", "nvidia"]}
+          }
+        },
+        "models": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9 ._-]{2,80}$"}},
+        "interconnect": {"enum": ["pcie", "nvlink", "nvswitch"]},
+        "minimum_links_per_gpu": {"type": "integer", "minimum": 0, "maximum": 32},
+        "minimum_p2p_gbps": {"type": "number", "minimum": 0, "maximum": 5000},
+        "require_nvls": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "$comment": "PCIe has no NVLink links to count and no NVLS to require; expressing either would be a claim the fabric cannot support.",
+          "if": {"properties": {"interconnect": {"const": "pcie"}}, "required": ["interconnect"]},
+          "then": {"properties": {"minimum_links_per_gpu": {"const": 0}, "require_nvls": {"const": false}}}
+        },
+        {
+          "$comment": "NVLS exists only behind NVSwitch.",
+          "if": {"properties": {"require_nvls": {"const": true}}, "required": ["require_nvls"]},
+          "then": {"properties": {"interconnect": {"const": "nvswitch"}}}
+        }
+      ]
+    },
+    "rdma": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hcas", "max_benchmark_edges", "fabric_query_authorized", "minimum_bandwidth_gbps", "maximum_latency_us"],
+      "properties": {
+        "hcas": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/rdma_hca"}},
+        "max_benchmark_edges": {"type": "integer", "minimum": 1, "maximum": 256},
+        "fabric_query_authorized": {"type": "boolean"},
+        "minimum_bandwidth_gbps": {"type": "number", "minimum": 0, "maximum": 1600},
+        "maximum_latency_us": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000}
+      }
+    },
+    "rdma_hca": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name_pattern", "model_pattern", "firmware_pattern", "pci_bdf_pattern", "netdev_pattern", "ports"],
+      "properties": {
+        "name_pattern": {"$ref": "#/$defs/pattern_string"},
+        "model_pattern": {"$ref": "#/$defs/pattern_string"},
+        "firmware_pattern": {"$ref": "#/$defs/pattern_string"},
+        "pci_bdf_pattern": {"$ref": "#/$defs/pattern_string"},
+        "netdev_pattern": {"$ref": "#/$defs/pattern_string"},
+        "ports": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/rdma_port"}}
+      }
+    },
+    "rdma_port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "state", "width", "minimum_rate_gbps", "link_layer", "max_counter_delta"],
+      "properties": {
+        "port": {"type": "integer", "minimum": 1, "maximum": 16},
+        "state": {"enum": ["ACTIVE"]},
+        "width": {"type": "string", "pattern": "^[1-9][0-9]*X$"},
+        "minimum_rate_gbps": {"type": "number", "minimum": 1, "maximum": 1600},
+        "link_layer": {"enum": ["InfiniBand", "Ethernet"]},
+        "max_counter_delta": {"$ref": "#/$defs/counter_limits"}
+      }
+    },
+    "roce": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint", "max_benchmark_edges", "minimum_bandwidth_gbps", "maximum_latency_us"],
+      "properties": {
+        "endpoint": {"$ref": "#/$defs/roce_endpoint"},
+        "max_benchmark_edges": {"type": "integer", "minimum": 1, "maximum": 256},
+        "minimum_bandwidth_gbps": {"type": "number", "minimum": 0, "maximum": 1600},
+        "maximum_latency_us": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000}
+      }
+    },
+    "roce_endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hca_pattern", "port", "netdev", "vlan_netdev", "vlan_id", "address_pattern", "gid_type", "mtu", "pfc_max_counter_delta", "ecn_max_counter_delta", "retransmit_max_counter_delta"],
+      "properties": {
+        "hca_pattern": {"$ref": "#/$defs/pattern_string"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 16},
+        "netdev": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,63}$"},
+        "vlan_netdev": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,63}$"},
+        "vlan_id": {"type": "integer", "minimum": 1, "maximum": 4094},
+        "address_pattern": {"$ref": "#/$defs/pattern_string"},
+        "gid_type": {"const": "RoCE v2"},
+        "mtu": {"type": "integer", "minimum": 576, "maximum": 9600},
+        "pfc_max_counter_delta": {"$ref": "#/$defs/counter_limits"},
+        "ecn_max_counter_delta": {"$ref": "#/$defs/counter_limits"},
+        "retransmit_max_counter_delta": {"$ref": "#/$defs/counter_limits"}
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_filesystem_class", "expected_filesystem_types"],
+      "properties": {
+        "expected_filesystem_class": {"enum": ["vast", "nfs", "generic"]},
+        "expected_mount_source": {"type": "string", "maxLength": 256},
+        "expected_filesystem_types": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9]{2,16}$"}},
+        "required_mount_options": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9=_.:-]{1,64}$"}}
+      }
+    }
+  }
+}

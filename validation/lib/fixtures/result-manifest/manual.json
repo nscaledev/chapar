@@ -1,0 +1,21 @@
+{
+  "artifacts": {
+    "prometheus": "suite.prom",
+    "summary": "summary.json"
+  },
+  "generated_at": "2026-07-30T12:01:00Z",
+  "kind": "suite",
+  "policies": {
+    "threshold": "fail",
+    "unavailable": "fail"
+  },
+  "provenance": {
+    "ci_authoritative": false,
+    "mode": "manual"
+  },
+  "run_id": "manual-7b3f82c0-8118-4d2c-b88a-25b5b550c6d3",
+  "run_issued_at": "2026-07-30T12:00:00Z",
+  "schema_version": "1.0",
+  "suite": "node-admission",
+  "verdict": "PASS"
+}

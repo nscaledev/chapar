@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nscaledev.github.io/chapar/schemas/validation-suite-manifest/v1",
+  "title": "Chapar validation suite result manifest",
+  "description": "A suite-owned outcome. Only a post-job collector with sacct authority may create a tier manifest; suites must never infer scheduler state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "suite", "run_id", "run_issued_at", "generated_at", "provenance", "verdict", "policies", "artifacts"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "kind": {"const": "suite"},
+    "suite": {
+      "description": "Must stay equal to validation_result_suite_is_bound in result-manifest.sh. Suites outside this list still emit their own JSON and Prometheus artifacts; they are simply not bound to this contract.",
+      "enum": [
+        "container-smoke",
+        "cpu-platform",
+        "gpu-topology",
+        "node-admission",
+        "nvlink-p2p",
+        "rdma-link-check",
+        "rocev2-pairwise",
+        "slurm-placement",
+        "storage-burnin",
+        "vast"
+      ]
+    },
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"},
+    "run_issued_at": {"type": "string", "format": "date-time"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "provenance": {
+      "description": "Manual evidence is useful locally but must never be selected as CI evidence; the conditionals below make the two fields impossible to disagree.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "ci_authoritative"],
+      "properties": {
+        "mode": {"enum": ["manual", "runner"]},
+        "ci_authoritative": {"type": "boolean"}
+      },
+      "allOf": [
+        {"if": {"properties": {"mode": {"const": "manual"}}}, "then": {"properties": {"ci_authoritative": {"const": false}}}},
+        {"if": {"properties": {"mode": {"const": "runner"}}}, "then": {"properties": {"ci_authoritative": {"const": true}}}}
+      ]
+    },
+    "verdict": {"enum": ["PASS", "WARN", "FAIL", "SKIP"]},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unavailable", "threshold"],
+      "properties": {
+        "unavailable": {"enum": ["fail", "skip"]},
+        "threshold": {"enum": ["fail", "warn"]}
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "prometheus"],
+      "properties": {
+        "summary": {"const": "summary.json"},
+        "prometheus": {"const": "suite.prom"}
+      }
+    }
+  }
+}

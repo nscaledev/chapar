@@ -1,0 +1,22 @@
+{
+  "artifacts": {
+    "prometheus": "suite.prom",
+    "summary": "summary.json"
+  },
+  "generated_at": "2026-07-30T12:01:00Z",
+  "kind": "suite",
+  "policies": {
+    "threshold": "warn",
+    "unavailable": "skip"
+  },
+  "provenance": {
+    "ci_authoritative": true,
+    "mode": "runner"
+  },
+  "reason": "optional Fabric Manager status is not visible to the batch user",
+  "run_id": "fixture-warn-001",
+  "run_issued_at": "2026-07-30T12:00:00Z",
+  "schema_version": "1.0",
+  "suite": "gpu-topology",
+  "verdict": "WARN"
+}

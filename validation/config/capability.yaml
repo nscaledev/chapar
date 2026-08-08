@@ -1,0 +1,109 @@
+# Per-cluster hardware expectations, not Chapar policy.
+#
+# These are the thresholds the capability suites compare observations against.
+# They live here, tracked and reviewed, for the same reason network.yaml does: a
+# suite must not learn its expectations from an ambient site file or an
+# environment variable. AGENTS.md and etc/README.md both refuse site-file and
+# environment authority, and the config:environments_root post-mortem in
+# etc/README.md is what an unset ambient variable actually costs.
+#
+# `fabric` decides which transport suites apply at all: rdma-link-check runs only
+# on infiniband and rocev2-pairwise only on roce; each SKIPs otherwise rather than
+# reporting a pass it did not earn.
+fabric: infiniband
+
+cpu:
+  # cpu-platform compares these against /proc/cpuinfo, sysfs and, when a release
+  # is present, its recorded architecture. ELF is used only for machine
+  # compatibility -- microarchitecture is never inferred from a binary.
+  platform: generic
+  vendor: generic
+  required_features: []
+  numa_nodes: 1
+  pci_devices: 1
+  # Binaries whose ELF machine must match the host ISA. Empty means the check is
+  # not evaluated, which the suite reports as a WARN rather than a silent pass.
+  elf_paths: []
+
+node:
+  # node-admission inventory expectations. Omit a key to leave it uncompared.
+  expected_cpus: 64
+  expected_gpus: 8
+  expected_ib_nics: 1
+
+gpu:
+  # gpu-topology and nvlink-p2p. `interconnect` is the strongest lever here:
+  # pcie forbids a link-count expectation and NVLS, nvswitch requires NVSwitch or
+  # NVLink evidence, and require_nvls is only meaningful on nvswitch.
+  gpus_per_node: 8
+  accelerator:
+    kind: gpu
+    vendor: nvidia
+  models:
+    - NVIDIA H100
+  interconnect: nvswitch
+  minimum_links_per_gpu: 1
+  minimum_p2p_gbps: 100
+  require_nvls: true
+
+rdma:
+  # rdma-link-check. Patterns are full-match on the device name and substring
+  # elsewhere, mirroring how the identity is actually reported.
+  hcas:
+    - name_pattern: "mlx5_[0-9]+"
+      model_pattern: "ConnectX-8"
+      firmware_pattern: "28\\.[0-9]+\\.[0-9]+"
+      pci_bdf_pattern: "0000:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-7]"
+      netdev_pattern: "ib[0-9]+"
+      ports:
+        - port: 1
+          state: ACTIVE
+          width: 8X
+          minimum_rate_gbps: 400
+          link_layer: InfiniBand
+          # A counter that moved during the run is a link fault, so the tolerated
+          # delta is normally zero.
+          max_counter_delta:
+            symbol_error: 0
+            port_rcv_errors: 0
+  max_benchmark_edges: 8
+  # Fabric-wide discovery (iblinkinfo, ibnetdiscover, show_gids) reaches beyond the
+  # allocation, so it stays off unless a site authorizes it.
+  fabric_query_authorized: false
+  minimum_bandwidth_gbps: 100
+  maximum_latency_us: 10
+
+roce:
+  # rocev2-pairwise. The endpoint tuple must resolve exactly one RoCEv2 GID; an
+  # ambiguous or absent GID is a failure, because a benchmark that is not pinned to
+  # the intended GID proves nothing about the intended path.
+  endpoint:
+    hca_pattern: "mlx5_0"
+    port: 1
+    netdev: ens5f0
+    vlan_netdev: ens5f0.120
+    vlan_id: 120
+    address_pattern: "10\\.20\\.120\\.[0-9]+"
+    gid_type: RoCE v2
+    mtu: 9000
+    pfc_max_counter_delta:
+      rx_prio3_pause: 4
+    ecn_max_counter_delta:
+      np_ecn_marked_roce_packets: 2
+    retransmit_max_counter_delta:
+      roce_retransmitted_packets: 0
+  max_benchmark_edges: 1
+  minimum_bandwidth_gbps: 100
+  maximum_latency_us: 5
+
+storage:
+  # vast. Identity is read from the mount, never from a storage control plane.
+  expected_filesystem_class: vast
+  # Empty means uncompared. A tracked placeholder string would be worse than no
+  # expectation: the suite would compare the mount against the placeholder and
+  # report a failure that says nothing about the storage.
+  expected_mount_source: ""
+  expected_filesystem_types:
+    - nfs
+    - nfs4
+  required_mount_options: []

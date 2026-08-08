@@ -1,0 +1,47 @@
+{
+  "checksums": {
+    "all_rank_writes_verified": true
+  },
+  "mount_expectation": {
+    "filesystem_class": "nfs",
+    "filesystem_types": [
+      "nfs",
+      "nfs4"
+    ],
+    "required_options": [
+      "rw",
+      "hard"
+    ],
+    "source_identity": "10.10.0.5:/chapar"
+  },
+  "mount_observed": {
+    "filesystem_type": "nfs4",
+    "nfs_client_available": true,
+    "options": [
+      "rw",
+      "hard",
+      "vers=4.1"
+    ],
+    "source_identity": "10.10.0.5:/chapar",
+    "statfs_type": "nfs"
+  },
+  "namespace": {
+    "delete_visible_to_all_ranks": true,
+    "marker_visible_to_all_ranks": true,
+    "rename_visible_to_all_ranks": true
+  },
+  "storage_observed": {
+    "baseline_verdict": "PASS",
+    "benchmarks_completed": true,
+    "fio_mibps": 3100.0,
+    "ior_mpiio_mibps": 3900.0,
+    "ior_posix_mibps": 4200.0,
+    "mdtest_ops_per_second": 52000.0,
+    "planned_bytes": 268435456,
+    "target_free_bytes": 4398046511104
+  },
+  "verdicts": {
+    "storage-burnin": "PASS",
+    "vast": "PASS"
+  }
+}

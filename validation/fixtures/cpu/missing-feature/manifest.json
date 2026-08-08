@@ -1,0 +1,43 @@
+{
+  "cpu_platform": {
+    "architecture": "x86_64",
+    "chapar_arch": "linux-ubuntu24.04-x86_64_v4",
+    "elf": [
+      {
+        "error": "",
+        "machine": "Advanced Micro Devices X86-64",
+        "path": "/opt/chapar/bin/tool"
+      }
+    ],
+    "features": [
+      "avx2",
+      "fma"
+    ],
+    "numa_nodes": 2,
+    "pci_devices": 12,
+    "release_error": "",
+    "vendor": "generic"
+  },
+  "expected": {
+    "features": [
+      "avx512f"
+    ],
+    "numa_nodes": 2,
+    "pci_devices": 12,
+    "platform": "generic",
+    "vendor": "generic"
+  },
+  "slurm_placement": {
+    "allocation": true,
+    "binding_cpus": "0-7",
+    "binding_output": "cpu-bind=MASK - fixture-node, task 0: mask 0xff\nCpus_allowed_list:\t0-7",
+    "cpus_on_node": "64",
+    "cpus_per_task": "8",
+    "job_id": "12345",
+    "node_list": "fixture-node"
+  },
+  "verdicts": {
+    "cpu-platform": "FAIL",
+    "slurm-placement": "PASS"
+  }
+}

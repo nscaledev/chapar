@@ -1,0 +1,52 @@
+{
+  "container_observed": {
+    "base_tools": [
+      {
+        "resolved": "/usr/bin/python3",
+        "tool": "python3"
+      },
+      {
+        "resolved": "/workspace/hpl/bin/mpirun",
+        "tool": "mpirun"
+      },
+      {
+        "resolved": "/usr/local/cuda/bin/nvcc",
+        "tool": "nvcc"
+      },
+      {
+        "resolved": "",
+        "tool": "cmake"
+      }
+    ],
+    "libfabric": {
+      "shm": "present",
+      "verbs": "present"
+    },
+    "module_command": true,
+    "module_destination": "/opt/chapar/modulefiles",
+    "modulefiles": 0,
+    "root_checks": [
+      {
+        "module": "openmpi",
+        "result": "pass"
+      },
+      {
+        "module": "ucx",
+        "result": "pass"
+      },
+      {
+        "module": "libfabric",
+        "result": "pass"
+      }
+    ],
+    "store": "/opt/chapar/example-lab/linux-x86_64-v4/install",
+    "ucx": {
+      "_mlx5": "present",
+      "cuda_ipc": "present",
+      "gdr_copy": "present"
+    }
+  },
+  "verdicts": {
+    "container-smoke": "FAIL"
+  }
+}
