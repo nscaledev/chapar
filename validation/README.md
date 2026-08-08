@@ -2,6 +2,31 @@
 
 This directory contains runtime validation tests for HPC/AI clusters running Chapar-built software environments. Tests validate hardware, interconnects, MPI/NCCL transports, I/O, profilers, and ML frameworks on real cluster hardware.
 
+> **`validation/ARCHITECTURE.md` is authoritative where this file disagrees with
+> it.** Parts of this document predate selection-bound validation and are still
+> being corrected. In particular: every suite requires a verified
+> `--selection`/`--selection-digest`/`--contract`, results are written under the
+> contract's `validation_work` root rather than `validation/results/`, and the
+> `CHAPAR_MODULE_<NAME>` and `CHAPAR_PARTITION` overrides described below are not
+> passed through by `validation/run` — its `--export` list is closed.
+
+## Suite results and fixtures
+
+Ten suites are bound to the shared result contract in `validation/lib`
+(`container-smoke`, `cpu-platform`, `gpu-topology`, `node-admission`,
+`nvlink-p2p`, `rdma-link-check`, `rocev2-pairwise`, `slurm-placement`,
+`storage-burnin`, `vast`). They emit `summary.json`, `suite.prom` and a
+schema-checked `suite-manifest.json`, and their exit code follows the verdict:
+`PASS`/`WARN` 0, `FAIL` 1, `SKIP` 77.
+
+A local run produces `manual` provenance and is never CI-authoritative; a runner
+must supply `VALIDATION_RUN_ID` and a timezone-aware `VALIDATION_RUN_ISSUED_AT`.
+
+Every hardware suite runs offline against recorded observations under
+`validation/fixtures/`, driven by `validation/tests/test-*-fixtures.sh`. Hardware
+expectations are tracked in `validation/config/capability.yaml`. See
+`ARCHITECTURE.md` for the contract and the fixture-injection rules.
+
 ## Quick Start
 
 ```bash

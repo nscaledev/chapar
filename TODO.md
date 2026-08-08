@@ -8,6 +8,14 @@
   selection-bound versioned releases on Ubuntu 24.04 for each registry tuple.
 - With separate approval, validate Slurm placement, modules/integrity, GPU,
   RDMA, MPI, NCCL, I/O, Enroot import/export, and `.sqsh` publication.
+- Resolve the runner storage contract that `storage-burnin` and `vast` require
+  (`VALIDATION_STORAGE_RESOLVED_TARGET`, `VALIDATION_STORAGE_POLICY_RESOLVED`,
+  the target/results roots, and an h5bench template). Nothing supplies it today,
+  so both suites SKIP on every node; their evaluators are covered by fixtures
+  only.
+- Run each capability suite on matching hardware once approved. Offline fixtures
+  prove the evaluators; they prove nothing about a GPU, a fabric, or a
+  filesystem.
 - Run `validation/tests/container-smoke.sbatch` once a sealed `.sqsh` exists for
   a registry-approved tuple. It is the only test that uses Pyxis, and it produces
   the `pyxis-smoke.txt` that the runtime receipt digests. The rootfs inventory

@@ -190,6 +190,14 @@ run_case inventory python3 -I -E envs/software/tests/test_inventory.py
 run_case catalog uv run --offline envs/software/tests/test_catalog.py
 run_case cookiecutter uv run --offline cookiecutter/chapar-datacenter/tests/test_template.py
 run_case resolver-validation uv run --offline --with 'cookiecutter>=2,<3' --with 'jsonschema>=4,<5' --with 'pydantic>=2,<3' --with 'pytest>=8,<9' --with 'PyYAML>=6,<7' pytest -q tools/chapar_config/tests validation/tests/test_selection_consumers.py validation/tests/test_validation_authority.py ci/tests/test_cve_checker.py
+run_case validation-manifest bash validation/lib/test-result-manifest.sh
+run_case validation-fixture-mode bash validation/lib/test-fixture-mode.sh
+run_case validation-capability bash validation/config/test-capability.sh
+run_case validation-cpu-fixtures bash validation/tests/test-cpu-fixtures.sh
+run_case validation-gpu-fixtures bash validation/tests/test-gpu-fixtures.sh
+run_case validation-transport-fixtures bash validation/tests/test-transport-fixtures.sh
+run_case validation-storage-fixtures bash validation/tests/test-storage-fixtures.sh
+run_case validation-container-fixtures bash validation/tests/test-container-fixtures.sh
 run_case release-plan bash envs/software/tests/release-helper-plan-test.sh
 run_case cache-module-plan bash etc/tests/selection-config-test.sh
 run_case ci-plan bash ci/tests/submit-env-build-test.sh
