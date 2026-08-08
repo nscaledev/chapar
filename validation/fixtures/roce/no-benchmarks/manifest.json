@@ -1,0 +1,79 @@
+{
+  "expectations": {
+    "fabric": "roce",
+    "roce": {
+      "endpoint": {
+        "address_pattern": "10\\.20\\.120\\.[0-9]+",
+        "ecn_max_counter_delta": {
+          "np_ecn_marked_roce_packets": 2
+        },
+        "gid_type": "RoCE v2",
+        "hca_pattern": "mlx5_0",
+        "mtu": 9000,
+        "netdev": "ens5f0",
+        "pfc_max_counter_delta": {
+          "rx_prio3_pause": 4
+        },
+        "port": 1,
+        "retransmit_max_counter_delta": {
+          "roce_retransmitted_packets": 0
+        },
+        "vlan_id": 120,
+        "vlan_netdev": "ens5f0.120"
+      },
+      "max_benchmark_edges": 1,
+      "maximum_latency_us": 5,
+      "minimum_bandwidth_gbps": 100
+    }
+  },
+  "roce_observed": {
+    "addresses": [
+      "10.20.120.11"
+    ],
+    "benchmarks": [],
+    "carrier": "1",
+    "commands": {
+      "ethtool_stats": true,
+      "ibdev2netdev": true,
+      "ip": true,
+      "rdma_link": true,
+      "show_gids": true
+    },
+    "counters_after": {
+      "np_ecn_marked_roce_packets": 3,
+      "roce_retransmitted_packets": 0,
+      "rx_prio3_pause": 12
+    },
+    "counters_before": {
+      "np_ecn_marked_roce_packets": 2,
+      "roce_retransmitted_packets": 0,
+      "rx_prio3_pause": 10
+    },
+    "gids": [
+      {
+        "gid": "::ffff:10.20.120.11",
+        "hca": "mlx5_0",
+        "index": 3,
+        "netdev": "ens5f0.120",
+        "port": 1,
+        "type": "v2"
+      }
+    ],
+    "hca": "mlx5_0",
+    "hca_netdev": "ens5f0",
+    "link_layer": "Ethernet",
+    "mtu": 9000,
+    "port": 1,
+    "rdma_link": "link mlx5_0/1 state ACTIVE netdev ens5f0",
+    "state": "4: ACTIVE",
+    "vlan": {
+      "id": 120,
+      "kind": "vlan",
+      "netdev": "ens5f0.120",
+      "parent": "ens5f0"
+    }
+  },
+  "verdicts": {
+    "rocev2-pairwise": "FAIL"
+  }
+}

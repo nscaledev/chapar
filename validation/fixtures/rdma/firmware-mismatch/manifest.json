@@ -1,0 +1,78 @@
+{
+  "expectations": {
+    "fabric": "infiniband",
+    "rdma": {
+      "fabric_query_authorized": false,
+      "hcas": [
+        {
+          "firmware_pattern": "28\\.[0-9]+\\.[0-9]+",
+          "model_pattern": "ConnectX-8",
+          "name_pattern": "mlx5_[0-9]+",
+          "netdev_pattern": "ib[0-9]+",
+          "pci_bdf_pattern": "0000:[0-9a-f]{2}:[0-9a-f]{2}\\.[0-7]",
+          "ports": [
+            {
+              "link_layer": "InfiniBand",
+              "max_counter_delta": {
+                "port_rcv_errors": 0,
+                "symbol_error": 0
+              },
+              "minimum_rate_gbps": 400,
+              "port": 1,
+              "state": "ACTIVE",
+              "width": "8X"
+            }
+          ]
+        }
+      ],
+      "max_benchmark_edges": 8,
+      "maximum_latency_us": 10,
+      "minimum_bandwidth_gbps": 100
+    }
+  },
+  "rdma_observed": {
+    "benchmark_edges": [],
+    "commands": {
+      "ibdev2netdev": true,
+      "ibstat": true,
+      "ibv_devinfo": true,
+      "lspci": true,
+      "rdma_link": true
+    },
+    "fabric_queries": {},
+    "hcas": [
+      {
+        "firmware": "20.31.1014",
+        "model": "Mellanox Technologies MT2910 Family [ConnectX-8]",
+        "name": "mlx5_0",
+        "pci_bdf": "0000:0a:00.0",
+        "ports": [
+          {
+            "counters_after": {
+              "port_rcv_errors": 0,
+              "symbol_error": 0
+            },
+            "counters_before": {
+              "port_rcv_errors": 0,
+              "symbol_error": 0
+            },
+            "gids": [
+              "fe80:0000:0000:0000:1070:fd03:00ab:cdef"
+            ],
+            "guid": "0x1070fd0300abcdef",
+            "lid": "12",
+            "link_layer": "InfiniBand",
+            "netdev": "ib0",
+            "port": 1,
+            "rate_gbps": 400.0,
+            "state": "ACTIVE",
+            "width": "8X"
+          }
+        ]
+      }
+    ]
+  },
+  "verdicts": {
+    "rdma-link-check": "FAIL"
+  }
+}

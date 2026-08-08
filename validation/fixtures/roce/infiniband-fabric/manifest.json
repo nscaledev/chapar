@@ -1,0 +1,74 @@
+{
+  "expectations": {
+    "fabric": "infiniband"
+  },
+  "roce_observed": {
+    "addresses": [
+      "10.20.120.11"
+    ],
+    "benchmarks": [
+      {
+        "bandwidth_gbps": 180.0,
+        "latency_us": null,
+        "name": "ib_write_bw",
+        "success": true
+      },
+      {
+        "bandwidth_gbps": 170.0,
+        "latency_us": null,
+        "name": "ib_read_bw",
+        "success": true
+      },
+      {
+        "bandwidth_gbps": null,
+        "latency_us": 2.1,
+        "name": "ib_send_lat",
+        "success": true
+      }
+    ],
+    "carrier": "1",
+    "commands": {
+      "ethtool_stats": true,
+      "ibdev2netdev": true,
+      "ip": true,
+      "rdma_link": true,
+      "show_gids": true
+    },
+    "counters_after": {
+      "np_ecn_marked_roce_packets": 3,
+      "roce_retransmitted_packets": 0,
+      "rx_prio3_pause": 12
+    },
+    "counters_before": {
+      "np_ecn_marked_roce_packets": 2,
+      "roce_retransmitted_packets": 0,
+      "rx_prio3_pause": 10
+    },
+    "gids": [
+      {
+        "gid": "::ffff:10.20.120.11",
+        "hca": "mlx5_0",
+        "index": 3,
+        "netdev": "ens5f0.120",
+        "port": 1,
+        "type": "v2"
+      }
+    ],
+    "hca": "mlx5_0",
+    "hca_netdev": "ens5f0",
+    "link_layer": "Ethernet",
+    "mtu": 9000,
+    "port": 1,
+    "rdma_link": "link mlx5_0/1 state ACTIVE netdev ens5f0",
+    "state": "4: ACTIVE",
+    "vlan": {
+      "id": 120,
+      "kind": "vlan",
+      "netdev": "ens5f0.120",
+      "parent": "ens5f0"
+    }
+  },
+  "verdicts": {
+    "rocev2-pairwise": "SKIP"
+  }
+}
