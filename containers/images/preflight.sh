@@ -53,17 +53,23 @@ X86_ISA_LEVEL: Final = {
 BUILD_TOOLS: Final = {
     "linux-x86_64-generic": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
     "linux-x86_64-v4": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
+    "linux-aarch64-generic": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
     "linux-aarch64-gb300": ("enroot", "squashfs-tools", "zstd", "syft", "jq", "skopeo"),
 }
 ROLE_BY_MODE: Final = {"build": "builder", "runtime": "validator", "publisher": "publisher"}
+# The aarch64 targets are NVIDIA GPU targets, so both declare gpu/infiniband/
+# network. A declared-but-absent feature is a skip (exit 77), never a pass, so
+# listing them is what keeps an unaccelerated node from reporting success.
 RUNTIME_FEATURES: Final = {
     "linux-x86_64-generic": ("physical_x86_64_v1", "pmix", "pyxis", "munge", "shared_image"),
     "linux-x86_64-v4": ("physical_x86_64_v4", "pmix", "pyxis", "munge", "shared_image"),
+    "linux-aarch64-generic": ("pmix", "pyxis", "munge", "gpu", "infiniband", "network", "shared_image"),
     "linux-aarch64-gb300": ("gb300", "pmix", "pyxis", "munge", "gpu", "infiniband", "network", "shared_image"),
 }
 RUNTIME_DIAGNOSTICS: Final = {
     "linux-x86_64-generic": ("pmix_plugins", "pyxis_flags", "munge_domain", "network_expectation", "lscpu", "cpuid_isa_level", "elf_isa_level"),
     "linux-x86_64-v4": ("pmix_plugins", "pyxis_flags", "munge_domain", "network_expectation", "lscpu", "cpuid_isa_level", "elf_isa_level"),
+    "linux-aarch64-generic": ("pmix_plugins", "pyxis_flags", "munge_domain", "driver_version", "gpu_topology", "infiniband_devices", "network_expectation"),
     "linux-aarch64-gb300": ("pmix_plugins", "pyxis_flags", "munge_domain", "driver_version", "gpu_topology", "infiniband_devices", "network_expectation"),
 }
 

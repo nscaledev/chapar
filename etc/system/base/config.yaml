@@ -1,5 +1,12 @@
 config:
-  environments_root: $HPCSIM_HOME_ROOT/environments
+  # config:environments_root is deliberately absent. It read
+  # $HPCSIM_HOME_ROOT/environments; no live path in this repository sets that
+  # variable -- it survives only in the retired envs/hpcsim site example -- so
+  # the key expanded to the literal /environments. Chapar never creates a named
+  # managed environment -- release.sh and the resolver address the environment
+  # by directory (`spack -e <dir>`) -- so Spack's own default is correct and a
+  # selection-derived value would have nothing to derive from: the system scope
+  # is read before any selection is verified.
   build_jobs: 16
   concurrent_packages: 16
   ccache: true

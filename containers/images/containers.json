@@ -6,7 +6,12 @@
       "base_image": "nvcr.io/nvidia/hpc-benchmarks",
       "source_lock_category": "nvidia_hpc_benchmarks_oci",
       "accepted_software_sets": ["vlad"],
-      "allowed_targets": ["linux-x86_64-v4", "linux-aarch64-gb300"],
+      "allowed_targets": [
+        "linux-x86_64-generic",
+        "linux-x86_64-v4",
+        "linux-aarch64-generic",
+        "linux-aarch64-gb300"
+      ],
       "module_destination": "/opt/chapar/modulefiles",
       "injection_requirements": {
         "closure_deptypes": ["link", "run"],

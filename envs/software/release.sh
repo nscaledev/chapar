@@ -230,6 +230,16 @@ expected_paths = {
 }
 if paths != expected_paths:
     fail("selection paths do not match target contract derivation")
+# Mirrors tools/chapar_config/paths.py CONTAINER_PREFIX. A store prefix built here
+# is copied into a container image at its identical absolute path, so a contract
+# that selects a container must build inside the reserved /opt/chapar namespace.
+# Re-derived rather than trusted, because release.sh never treats the selection as
+# authoritative over the on-disk contract.
+container_prefix = PurePosixPath("/opt/chapar")
+if contract.get("container_selections"):
+    install_root = PurePosixPath(durable["install_tree"])
+    if container_prefix != install_root and container_prefix not in install_root.parents:
+        fail("a container-selecting contract must place install_tree under /opt/chapar")
 authority_paths = {
     "software_catalog": repository_root / "envs/software/spack.yaml",
     "target_registry": repository_root / "containers/images/targets.json",
@@ -450,7 +460,7 @@ config:
     root: ${INSTALL_TREE}
     padded_length: ${effective_padded_length}
     projections:
-      all: "{name}-{version}-{hash}"
+      all: "{architecture.platform}-{architecture.target}/{name}-{version}-{hash}"
   build_stage:
   - ${SPACK_BUILD_STAGE}/stage
   ccache: ${ccache_enabled}
@@ -469,7 +479,8 @@ modules:
   default:
     roots:
       tcl: ${module_root}/modulefiles
-      lmod: ${module_root}/lmods
+      lmod: ${module_root}/lmod
+    enable: [tcl]
     tcl:
       exclude_implicits: true
       hash_length: 0

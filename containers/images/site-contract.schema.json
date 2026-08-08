@@ -50,6 +50,7 @@
       "required": [
         "linux-x86_64-generic",
         "linux-x86_64-v4",
+        "linux-aarch64-generic",
         "linux-aarch64-gb300"
       ],
       "properties": {
@@ -76,6 +77,20 @@
               "properties": {
                 "hardware_class": {
                   "const": "physical-x86-64-v4"
+                }
+              }
+            }
+          ]
+        },
+        "linux-aarch64-generic": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/target_contract"
+            },
+            {
+              "properties": {
+                "hardware_class": {
+                  "const": "physical-aarch64"
                 }
               }
             }

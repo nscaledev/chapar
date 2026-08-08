@@ -3,10 +3,25 @@ config:
   concurrent_packages: 16
   install_tree:
     root: $CHAPAR_INSTALL_TREE_ROOT
+    # Upstream's own default in etc/spack/defaults/config.yaml. The architecture
+    # component is not cosmetic here: a target contract may opt into
+    # `shared_path_classes: [install_tree]` together with `share_across_targets`,
+    # which drops the per-target namespace from the derived store path. Without
+    # the architecture directory an x86_64 and an aarch64 release would then
+    # write sibling prefixes into one store, and container injection -- which
+    # copies store prefixes into an image at their identical absolute path --
+    # has no way to select one architecture's subtree.
     projections:
-      all: "{name}-{version}-{hash}"
+      all: "{architecture.platform}-{architecture.target}/{name}-{version}-{hash}"
+  # A list, as upstream ships it, so Spack falls through when the first entry is
+  # missing or full. The selection-derived stage stays first and authoritative;
+  # the two fallbacks are Spack's own defaults and only apply when
+  # CHAPAR_SPACK_BUILD_STAGE is unset, which previously left build_stage
+  # expanding to nothing at all.
   build_stage:
     - $CHAPAR_SPACK_BUILD_STAGE
+    - $tempdir/$user/spack-stage
+    - $user_cache_path/stage
   test_stage: $user_cache_path/test
   source_cache: $user_cache_path/source
   misc_cache: $user_cache_path/cache

@@ -48,6 +48,17 @@ roots plus link/run closure. Modules remain opt-in at the registry module
 destination. A plan cannot substitute for Enroot import/export or in-image
 runtime verification.
 
+Vlad delivery covers four registry targets: `linux-x86_64-generic` and
+`linux-aarch64-generic` for portable delivery, plus `linux-x86_64-v4` and
+`linux-aarch64-gb300`, which narrow the ISA level and the CUDA architecture list
+respectively. A contract selecting any container must declare `install_tree`
+under the reserved `/opt/chapar` namespace, and `publication.publish_containers`
+must be true before an artifact is produced. `docs/container-injection.md` records
+the host-versus-image split the build enforces and the non-interference rules; the
+rootfs inventory diff, glibc comparison, in-image unshadowing check, and
+`validation/tests/container-smoke.sbatch` all require a real container and have
+not run.
+
 ## Immutable legacy state
 
 `/resources/chapar/vlad` and `/resources/chapar/hpcsim` are immutable

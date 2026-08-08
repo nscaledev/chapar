@@ -48,7 +48,12 @@ oci_bases: Final = {
     "nvidia_hpc_benchmarks_oci": {
         "image": "nvcr.io/nvidia/hpc-benchmarks",
         "tag": "26.02",
-        "targets": ("linux-x86_64-generic", "linux-x86_64-v4", "linux-aarch64-gb300"),
+        "targets": (
+            "linux-x86_64-generic",
+            "linux-x86_64-v4",
+            "linux-aarch64-generic",
+            "linux-aarch64-gb300",
+        ),
     },
     "ubuntu_base_oci": {
         "image": "ubuntu",
@@ -155,20 +160,32 @@ def validation_record(value: object, label: str, require_result: bool) -> None:
         raise ValueError(f"{label} result must prove a commit object")
 
 
+# Must equal containers/images/targets.json exactly. This copy had drifted: it
+# still carried the retired cuda_arch=75 entry that the registry dropped, so
+# validate_targets below failed for every invocation regardless of the lock
+# under test.
+CUDA_ARCH_FULL: Final = ["80", "86", "87", "89", "90", "90a", "100", "103", "110", "120", "121"]
 expected_targets: Final = {
     "linux-x86_64-generic": {
         "oci_platform": "linux/amd64",
         "native_arch": "x86_64",
         "spack_target": "x86_64",
         "llvm_targets": ["x86", "nvptx"],
-        "cuda_arch": ["75", "80", "86", "87", "89", "90", "90a", "100", "103", "110", "120", "121"],
+        "cuda_arch": CUDA_ARCH_FULL,
     },
     "linux-x86_64-v4": {
         "oci_platform": "linux/amd64",
         "native_arch": "x86_64",
         "spack_target": "x86_64_v4",
         "llvm_targets": ["x86", "nvptx"],
-        "cuda_arch": ["75", "80", "86", "87", "89", "90", "90a", "100", "103", "110", "120", "121"],
+        "cuda_arch": CUDA_ARCH_FULL,
+    },
+    "linux-aarch64-generic": {
+        "oci_platform": "linux/arm64",
+        "native_arch": "aarch64",
+        "spack_target": "aarch64",
+        "llvm_targets": ["aarch64", "nvptx"],
+        "cuda_arch": CUDA_ARCH_FULL,
     },
     "linux-aarch64-gb300": {
         "oci_platform": "linux/arm64",
@@ -528,10 +545,17 @@ def synthetic_complete_sources(template: dict[str, object]) -> dict[str, object]
         "image": "nvcr.io/nvidia/hpc-benchmarks",
         "tag": "26.02",
         "index_digest": digest(1),
+        # Derived from oci_bases rather than listed, so registering a target
+        # cannot leave the synthetic complete lock behind. Targets sharing an OCI
+        # platform must name the same descriptor/config pair -- that is the
+        # invariant validate() enforces -- so key the digests on the platform.
         "platforms": {
-            "linux-x86_64-generic": {"oci_platform": "linux/amd64", "descriptor_digest": digest(2), "config_digest": digest(3)},
-            "linux-x86_64-v4": {"oci_platform": "linux/amd64", "descriptor_digest": digest(2), "config_digest": digest(3)},
-            "linux-aarch64-gb300": {"oci_platform": "linux/arm64", "descriptor_digest": digest(4), "config_digest": digest(5)},
+            target: {
+                "oci_platform": expected_targets[target]["oci_platform"],
+                "descriptor_digest": digest(2 if expected_targets[target]["oci_platform"] == "linux/amd64" else 4),
+                "config_digest": digest(3 if expected_targets[target]["oci_platform"] == "linux/amd64" else 5),
+            }
+            for target in oci_bases["nvidia_hpc_benchmarks_oci"]["targets"]
         },
         "resolved_on": "2026-08-05",
     }

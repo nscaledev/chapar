@@ -24,6 +24,11 @@
       "partition": "REPLACE_WITH_X86_V4_PARTITION",
       "constraint": "REPLACE_WITH_X86_V4_CONSTRAINT"
     },
+    "linux-aarch64-generic": {
+      "hardware_class": "physical-aarch64",
+      "partition": "REPLACE_WITH_AARCH64_PARTITION",
+      "constraint": "REPLACE_WITH_AARCH64_CONSTRAINT"
+    },
     "linux-aarch64-gb300": {
       "hardware_class": "gb300",
       "partition": "REPLACE_WITH_GB300_PARTITION",

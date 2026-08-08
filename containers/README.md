@@ -6,8 +6,22 @@ load them; duplicated base/target dictionaries are not authority.
 
 | Public container | Accepted set | Allowed targets |
 |---|---|---|
-| `nvidia-vlad` | `vlad` | `linux-x86_64-v4`, `linux-aarch64-gb300` |
+| `nvidia-vlad` | `vlad` | `linux-x86_64-generic`, `linux-x86_64-v4`, `linux-aarch64-generic`, `linux-aarch64-gb300` |
 | `ubuntu-hpcsim` | `hpcsim` | `linux-x86_64-generic` |
+
+`nvidia-vlad` covers both a generic and a microarchitecture-specific target per
+ISA. The generic pair (`spack_target` `x86_64` and `aarch64`) is the portable
+delivery; `linux-x86_64-v4` and `linux-aarch64-gb300` narrow the ISA level and
+the CUDA architecture list respectively. All four share their base image's OCI
+platform descriptor and differ only in the Spack tree layered on top.
+
+Every target contract that selects a container must declare its `install_tree`
+under the reserved `/opt/chapar` namespace. Injection copies each store prefix
+into the image at its identical absolute path, so the store root is at once a
+builder path and an in-image path; confining it keeps it from colliding with the
+base image's own content. Builders must provide `/opt/chapar` as a bind mount
+onto real storage, not a symlink — image planning rejects a store root with a
+symlinked component.
 
 The selected release is produced from `envs/software/spack.yaml` plus a
 reviewed `datacenters/<id>` target contract. Image planning verifies immutable

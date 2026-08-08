@@ -11,6 +11,15 @@ from tools.chapar_datacenter_models import SharedPathClass
 
 IDENTIFIER: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 PROTECTED: Final = PurePosixPath("/resources/chapar")
+# Container injection copies each installed store prefix into the image at its
+# identical absolute path (containers.json declares
+# injection_requirements.prefix_policy: build-time-absolute), so the store root is
+# simultaneously a builder path and an in-image path. Confining it to one reserved
+# namespace is what makes that safe: /opt/chapar cannot collide with a base
+# image's distribution content, and it keeps the path free of site identity, so
+# the same release is byte-identical on the builder and inside the .sqsh. A
+# contract that selects no container is unconstrained.
+CONTAINER_PREFIX: Final = PurePosixPath("/opt/chapar")
 
 
 def validated_identity(value: str, label: str) -> str:
@@ -92,6 +101,14 @@ def validate_contract_paths(
                     )
     if not contract.sharing.seed_mirrors_read_only:
         raise ResolverError("seed mirrors must remain read-only and cannot publish")
+    if contract.container_selections:
+        install_tree = PurePosixPath(contract.paths.durable_writable.install_tree)
+        if CONTAINER_PREFIX != install_tree and CONTAINER_PREFIX not in install_tree.parents:
+            raise ResolverError(
+                "a contract selecting a container must place install_tree under "
+                f"{CONTAINER_PREFIX}: the store prefix is injected into the image at "
+                "its identical absolute path"
+            )
 
 
 def resolved_paths(

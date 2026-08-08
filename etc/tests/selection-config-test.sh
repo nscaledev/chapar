@@ -78,6 +78,27 @@ grep -Fq 'autopush: true' "${TMP}/scope/mirrors.yaml"
 grep -Fq "$(jq -r .paths.release_final "${SELECTION}")/modulefiles" "${TMP}/scope/modules.yaml"
 grep -Fq 'padded_length:' "${TMP}/scope/config.yaml"
 
+# The install-tree projection is a three-way contract: the persistent user scope,
+# the two rendered scopes, and containers/images/build-image.sh, which resolves
+# store prefixes by walking it. Assert the rendered value, then assert every
+# tracked declaration agrees, so none of them can drift alone.
+PROJECTION='all: "{architecture.platform}-{architecture.target}/{name}-{version}-{hash}"'
+grep -Fq "${PROJECTION}" "${TMP}/scope/config.yaml"
+for declaration in "${ROOT}/etc/user/base/config.yaml" "${ROOT}/envs/software/release.sh" \
+  "${ROOT}/etc/chapar-selection.sh"; do
+  grep -Fq "${PROJECTION}" "${declaration}" ||
+    { echo "install-tree projection drifted in ${declaration}" >&2; exit 1; }
+done
+
+# render_scopes and release.sh make_scope had diverged: one declared `enable:`
+# without the tcl options, the other the tcl options without `enable:`, so which
+# tool rendered a release decided whether hash_length, exclude_implicits and
+# autoload applied to its modulefiles. Both must now carry all of it.
+grep -Fq 'enable: [tcl]' "${TMP}/scope/modules.yaml"
+grep -Fq 'exclude_implicits: true' "${TMP}/scope/modules.yaml"
+grep -Fq 'hash_length: 0' "${TMP}/scope/modules.yaml"
+grep -Fq 'autoload: none' "${TMP}/scope/modules.yaml"
+
 mkdir -p "${TMP}/bin"
 cat >"${TMP}/bin/spack" <<'MOCK'
 #!/usr/bin/env bash

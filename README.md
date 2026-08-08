@@ -173,7 +173,11 @@ Ubuntu 24.04 builders/Slurm nodes:
 - buildcache publication or any legacy-cache migration;
 - Slurm submission and integrity, GPU, RDMA, MPI, NCCL, or I/O validation;
 - source-lock completion, Enroot import/export, `.sqsh` validation, and image
-  publication for each registry-approved tuple.
+  publication for each registry-approved tuple;
+- the container-injection checks that need a real rootfs: the pre/post rootfs
+  inventory diff, the release-versus-base glibc comparison, the in-image
+  unshadowing check, and `validation/tests/container-smoke.sbatch`. See
+  `docs/container-injection.md` for the host-versus-image split those enforce.
 
 No platform command above is claimed to have run. See the focused docs for
 contracts and gates; they link here instead of duplicating this sequence.

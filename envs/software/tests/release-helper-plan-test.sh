@@ -4,12 +4,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 FIXTURES="${SCRIPT_DIR}/fixtures"
-TMP_ROOT="$(mktemp -d /private/tmp/chapar-task6-test.XXXXXX)"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/chapar-task6-test.XXXXXX")"
+# release.sh rejects symlink ambiguity in any declared path, and $TMPDIR is a
+# symlink on some platforms, so resolve before deriving the site root.
+TMP_ROOT="$(cd "${TMP_ROOT}" && pwd -P)"
+# The declared contract roots used to be a literal /private/tmp/chapar-task6,
+# which exists only on macOS -- this suite could not run on the Ubuntu builders
+# the repository targets. Derive them from TMP_ROOT instead so the fixture is
+# self-contained and the trap alone is enough to clean up.
+SITE_ROOT="${TMP_ROOT}/site"
 FIXTURE_ROOT="${TMP_ROOT}/repo"
 HELPER="${FIXTURE_ROOT}/envs/software/release.sh"
 SELECTION="${TMP_ROOT}/selection/selection.json"
 CONTRACT="${FIXTURE_ROOT}/datacenters/fixture-dc/targets/linux-x86_64-v4/contract.json"
-trap 'rm -rf -- "${TMP_ROOT}" /private/tmp/chapar-task6' EXIT
+trap 'rm -rf -- "${TMP_ROOT}"' EXIT
 mkdir -p "$(dirname "${HELPER}")" "$(dirname "${CONTRACT}")" \
     "${FIXTURE_ROOT}/containers/images" "${FIXTURE_ROOT}/etc" "$(dirname "${SELECTION}")"
 cp "${SOURCE_ROOT}/envs/software/release.sh" "${HELPER}"
@@ -22,29 +30,29 @@ cp "${SOURCE_ROOT}/containers/images/targets.json" \
 cp "${FIXTURES}/release-plan-selection.json" "${SELECTION}"
 cp "${FIXTURES}/spack.yaml" "$(dirname "${SELECTION}")/spack.yaml"
 cp "${FIXTURES}/target-policy.yaml" "$(dirname "${SELECTION}")/target-policy.yaml"
-python3 - "${FIXTURE_ROOT}" "${SELECTION}" "${CONTRACT}" <<'PY'
+python3 - "${FIXTURE_ROOT}" "${SELECTION}" "${CONTRACT}" "${SITE_ROOT}" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
-root, selection_path, contract_path = map(Path, sys.argv[1:])
+root, selection_path, contract_path, site = map(Path, sys.argv[1:])
 sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
 contract = {
     "datacenter_id": "fixture-dc", "target": "linux-x86_64-v4",
     "paths": {
         "durable_writable": {
-            "releases": "/private/tmp/chapar-task6/releases", "modulefiles": "/private/tmp/chapar-task6/modules",
-            "install_tree": "/private/tmp/chapar-task6/install", "writable_buildcache": "/private/tmp/chapar-task6/buildcache",
-            "ccache": "/private/tmp/chapar-task6/ccache", "container_outputs": "/private/tmp/chapar-task6/containers",
-            "receipts": "/private/tmp/chapar-task6/receipts", "evidence": "/private/tmp/chapar-task6/evidence",
+            "releases": f"{site}/releases", "modulefiles": f"{site}/modules",
+            "install_tree": f"{site}/install", "writable_buildcache": f"{site}/buildcache",
+            "ccache": f"{site}/ccache", "container_outputs": f"{site}/containers",
+            "receipts": f"{site}/receipts", "evidence": f"{site}/evidence",
         },
         "temporary": {
-            "release_staging": "/private/tmp/chapar-task6/releases/.staging",
-            "spack_build_stage": "/private/tmp/chapar-task6/work/spack-stage",
-            "image_staging": "/private/tmp/chapar-task6/work/image-stage",
-            "validation_work": "/private/tmp/chapar-task6/work/validation",
-            "resolver_work": "/private/tmp/chapar-task6/work/resolver",
+            "release_staging": f"{site}/releases/.staging",
+            "spack_build_stage": f"{site}/work/spack-stage",
+            "image_staging": f"{site}/work/image-stage",
+            "validation_work": f"{site}/work/validation",
+            "resolver_work": f"{site}/work/resolver",
         },
     },
     "sharing": {"share_across_software_sets": False, "share_across_targets": False},
@@ -54,6 +62,13 @@ contract_path.write_text(json.dumps(contract, sort_keys=True) + "\n")
 datacenter = contract_path.parents[2] / "datacenter.json"
 datacenter.write_text(json.dumps({"datacenter_id": "fixture-dc", "targets": ["linux-x86_64-v4"]}, sort_keys=True) + "\n")
 selection = json.loads(selection_path.read_bytes())
+# The tracked fixture records its paths under the platform-neutral placeholder
+# root /fixture-site; bind them to this run's site root so the derivation
+# release.sh recomputes from the contract matches byte for byte.
+selection["paths"] = {
+    name: value.replace("/fixture-site", str(site), 1)
+    for name, value in selection["paths"].items()
+}
 selection["authorities"] = {
     "software_catalog": sha(root / "envs/software/spack.yaml"),
     "target_registry": sha(root / "containers/images/targets.json"),
@@ -71,17 +86,17 @@ EXPECTED="$(shasum -a 256 "${SELECTION}" | awk '{print $1}')"
 output="$(bash "${HELPER}" plan --selection "${SELECTION}" --selection-digest "${EXPECTED}")"
 grep -q '^operation: build$' <<<"${output}"
 grep -q '^identity: fixture-dc/vlad/linux-x86_64-v4/release-6/run-6$' <<<"${output}"
-grep -q '^release_staging: /private/tmp/chapar-task6/releases/.staging/fixture-dc/vlad/linux-x86_64-v4/release-6.run-6$' <<<"${output}"
-grep -q '^release_final: /private/tmp/chapar-task6/releases/fixture-dc/vlad/linux-x86_64-v4/release-6$' <<<"${output}"
-grep -q '^modulefiles: /private/tmp/chapar-task6/modules/fixture-dc/vlad/linux-x86_64-v4/release-6$' <<<"${output}"
-grep -q '^writable_buildcache: /private/tmp/chapar-task6/buildcache/fixture-dc/vlad/linux-x86_64-v4$' <<<"${output}"
-grep -q '^spack_environment: /private/tmp/chapar-task6/releases/.staging/fixture-dc/vlad/linux-x86_64-v4/release-6.run-6$' <<<"${output}"
+grep -q "^release_staging: ${SITE_ROOT}/releases/.staging/fixture-dc/vlad/linux-x86_64-v4/release-6.run-6\$" <<<"${output}"
+grep -q "^release_final: ${SITE_ROOT}/releases/fixture-dc/vlad/linux-x86_64-v4/release-6\$" <<<"${output}"
+grep -q "^modulefiles: ${SITE_ROOT}/modules/fixture-dc/vlad/linux-x86_64-v4/release-6\$" <<<"${output}"
+grep -q "^writable_buildcache: ${SITE_ROOT}/buildcache/fixture-dc/vlad/linux-x86_64-v4\$" <<<"${output}"
+grep -q "^spack_environment: ${SITE_ROOT}/releases/.staging/fixture-dc/vlad/linux-x86_64-v4/release-6.run-6\$" <<<"${output}"
 grep -q '^checkout_lock: forbidden$' <<<"${output}"
 # ccache is bootstrapped with the OS external compiler before the staged roots,
 # so it can accelerate the gcc build rather than depend on the OS shipping it.
 grep -q '^bootstrap_specs: ccache$' <<<"${output}"
 grep -q '^staged_roots: gcc$' <<<"${output}"
-grep -q '^ccache_dir: /private/tmp/chapar-task6/ccache/fixture-dc/vlad/linux-x86_64-v4$' <<<"${output}"
+grep -q "^ccache_dir: ${SITE_ROOT}/ccache/fixture-dc/vlad/linux-x86_64-v4\$" <<<"${output}"
 grep -q '^publish_buildcache: true$' <<<"${output}"
 grep -q '^buildcache_signed: false$' <<<"${output}"
 grep -q '^buildcache_autopush: true$' <<<"${output}"
@@ -131,6 +146,39 @@ expect_failure wrong-digest bash "${HELPER}" plan --selection "${SELECTION}" --e
 expect_failure poison-path env CHAPAR_INSTALL_TREE_ROOT=/tmp/poison bash "${HELPER}" plan --selection "${SELECTION}" --expected-selection-sha256 "${EXPECTED}"
 expect_failure checkout-lock bash "${HELPER}" plan --selection "${SELECTION}" --expected-selection-sha256 "${EXPECTED}" --lock envs/hpcsim/spack.lock
 
+# Container injection copies each store prefix into the image at its identical
+# absolute path, so a contract that selects a container must build inside the
+# reserved /opt/chapar namespace. This fixture's install_tree is under the
+# disposable site root, so adding a container selection must fail closed rather
+# than produce a release no image can host.
+cp "${CONTRACT}" "${CONTRACT}.true"
+cp "${SELECTION}" "${SELECTION}.true"
+python3 - "${CONTRACT}" "${SELECTION}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+contract_path, selection_path = map(Path, sys.argv[1:])
+contract = json.loads(contract_path.read_bytes())
+contract["container_selections"] = [{"software_set": "vlad", "container": "nvidia-vlad"}]
+contract_path.write_text(json.dumps(contract, sort_keys=True) + "\n")
+selection = json.loads(selection_path.read_bytes())
+selection["authorities"]["target_contract"] = hashlib.sha256(contract_path.read_bytes()).hexdigest()
+selection_path.write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n")
+PY
+container_prefix_digest="$(shasum -a 256 "${SELECTION}" | awk '{print $1}')"
+# Assert the reason, not just the exit status: this selection is otherwise valid,
+# so a generic failure would prove nothing about the reserved-namespace rule.
+if bash "${HELPER}" plan --selection "${SELECTION}" --selection-digest "${container_prefix_digest}" \
+    >"${TMP_ROOT}/container-prefix.out" 2>"${TMP_ROOT}/container-prefix.err"; then
+    echo 'expected failure: container-prefix' >&2
+    exit 1
+fi
+[ ! -s "${TMP_ROOT}/container-prefix.out" ]
+grep -Fq 'install_tree under /opt/chapar' "${TMP_ROOT}/container-prefix.err"
+mv "${CONTRACT}.true" "${CONTRACT}"
+mv "${SELECTION}.true" "${SELECTION}"
+
 make_case() {
     local name="$1"
     local mutation="$2"
@@ -167,13 +215,13 @@ case_selection="$(make_case seed seed-autopush)"
 expect_failure seed-autopush bash "${HELPER}" plan --selection "${case_selection}" --selection-digest "$(case_digest "${case_selection}")"
 
 case_selection="$(make_case duplicate duplicate)"
-duplicate_final="/private/tmp/chapar-task6/releases/fixture-dc/vlad/linux-x86_64-v4/release-6"
+duplicate_final="${SITE_ROOT}/releases/fixture-dc/vlad/linux-x86_64-v4/release-6"
 mkdir -p "${duplicate_final}"
 expect_failure duplicate-release bash "${HELPER}" plan --selection "${case_selection}" --selection-digest "$(case_digest "${case_selection}")"
 rm -rf -- "${duplicate_final}"
 
 case_selection="$(make_case stale-staging stale-staging)"
-stale_staging="/private/tmp/chapar-task6/releases/.staging/fixture-dc/vlad/linux-x86_64-v4/release-6.run-6"
+stale_staging="${SITE_ROOT}/releases/.staging/fixture-dc/vlad/linux-x86_64-v4/release-6.run-6"
 mkdir -p "${stale_staging}"
 expect_failure stale-staging bash "${HELPER}" plan --selection "${case_selection}" --selection-digest "$(case_digest "${case_selection}")"
 rm -rf -- "${stale_staging}"
@@ -182,7 +230,7 @@ case_selection="$(make_case promote promote-missing-lock)"
 expect_failure promote-without-lock bash "${HELPER}" plan --operation promote --selection "${case_selection}" --selection-digest "$(case_digest "${case_selection}")"
 
 case_selection="$(make_case stale stale-metadata)"
-stale_final="/private/tmp/chapar-task6/releases/fixture-dc/vlad/linux-x86_64-v4/release-6"
+stale_final="${SITE_ROOT}/releases/fixture-dc/vlad/linux-x86_64-v4/release-6"
 mkdir -p "${stale_final}"
 printf '{}\n' >"${stale_final}/spack.lock"
 printf '{partial\n' >"${stale_final}/metadata.json"
@@ -226,7 +274,7 @@ metadata = {
 PY
 valid_output="$(bash "${HELPER}" plan --operation promote --selection "${case_selection}" --selection-digest "$(case_digest "${case_selection}")")"
 grep -q '^operation: promote$' <<<"${valid_output}"
-valid_metadata="/private/tmp/chapar-task6/releases/fixture-dc/vlad/linux-x86_64-v4/release-6/metadata.json"
+valid_metadata="${SITE_ROOT}/releases/fixture-dc/vlad/linux-x86_64-v4/release-6/metadata.json"
 cp "${valid_metadata}" "${valid_metadata}.saved"
 python3 - "${valid_metadata}" <<'PY'
 import json
@@ -266,9 +314,9 @@ PY
     expect_failure "metadata-${metadata_case}" bash "${HELPER}" plan --operation promote --selection "${case_selection}" --selection-digest "$(case_digest "${case_selection}")"
 done
 mv "${valid_metadata}.clean" "${valid_metadata}"
-printf 'tampered\n' >>"/private/tmp/chapar-task6/releases/fixture-dc/vlad/linux-x86_64-v4/release-6/spack.yaml"
+printf 'tampered\n' >>"${SITE_ROOT}/releases/fixture-dc/vlad/linux-x86_64-v4/release-6/spack.yaml"
 expect_failure release-byte-tamper bash "${HELPER}" plan --operation promote --selection "${case_selection}" --selection-digest "$(case_digest "${case_selection}")"
-rm -rf -- /private/tmp/chapar-task6
+rm -rf -- "${SITE_ROOT}"
 
 ln -s "${SELECTION}" "${TMP_ROOT}/selection-link.json"
 expect_failure selection-symlink bash "${HELPER}" plan --selection "${TMP_ROOT}/selection-link.json" --selection-digest "${EXPECTED}"
@@ -278,7 +326,7 @@ printf '#!/usr/bin/env bash\nprintf called >%q\n' "${TMP_ROOT}/spack-called" >"$
 chmod +x "${TMP_ROOT}/bin/spack"
 PATH="${TMP_ROOT}/bin:${PATH}" bash "${HELPER}" plan --selection "${SELECTION}" --selection-digest "${EXPECTED}" >/dev/null
 [ ! -e "${TMP_ROOT}/spack-called" ]
-[ ! -e /private/tmp/chapar-task6 ]
+[ ! -e "${SITE_ROOT}" ]
 grep -q 'trap cleanup_build EXIT' "${HELPER}"
 grep -q "trap 'exit 130' INT" "${HELPER}"
 grep -Fq 'spack -e ' "${HELPER}"

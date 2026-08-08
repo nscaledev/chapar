@@ -79,6 +79,14 @@ source["verified"]["nvidia_hpc_benchmarks_oci"] = {
             "descriptor_digest": "sha256:" + "2" * 64,
             "config_digest": "sha256:" + "3" * 64,
         },
+        # Likewise the two aarch64 targets share the single linux/arm64
+        # descriptor; linux-aarch64-generic carries the full cuda_arch list where
+        # linux-aarch64-gb300 narrows it, which is a Spack fact, not an OCI one.
+        "linux-aarch64-generic": {
+            "oci_platform": "linux/arm64",
+            "descriptor_digest": "sha256:" + "4" * 64,
+            "config_digest": "sha256:" + "5" * 64,
+        },
         "linux-aarch64-gb300": {
             "oci_platform": "linux/arm64",
             "descriptor_digest": "sha256:" + "4" * 64,

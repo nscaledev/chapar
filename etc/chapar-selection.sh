@@ -287,7 +287,7 @@ render_scopes() {
     # padded_length must match release.sh, otherwise a scope rendered here
     # installs to unpadded prefixes inside the same padded store.
     padded="$(install_tree_padded_length "${INSTALL_TREE}")"
-    printf 'config:\n  install_tree:\n    root: %s\n    padded_length: %s\n    projections:\n      all: "{name}-{version}-{hash}"\n  build_stage:\n    - %s\n  ccache: true\n' \
+    printf 'config:\n  install_tree:\n    root: %s\n    padded_length: %s\n    projections:\n      all: "{architecture.platform}-{architecture.target}/{name}-{version}-{hash}"\n  build_stage:\n    - %s\n  ccache: true\n' \
         "$(jq -Rrn --arg value "${INSTALL_TREE}" '$value|@json')" \
         "${padded}" \
         "$(jq -Rrn --arg value "${SPACK_BUILD_STAGE}" '$value|@json')" > "${output}/config.yaml"
@@ -295,7 +295,12 @@ render_scopes() {
     # the release-local modulefiles directory -- not the published pointer,
     # which already names one architecture directory inside it.
     module_root="${RELEASE_FINAL}/modulefiles"
-    printf 'modules:\n  default:\n    roots:\n      tcl: %s\n      lmod: %s\n    enable: [tcl]\n' \
+    # Must stay byte-equivalent in policy to release.sh make_scope. These two
+    # renderers had diverged -- this one set `enable: [tcl]` and no tcl options,
+    # make_scope set the tcl options and no `enable:` -- so which tool rendered a
+    # release's scope decided whether hash_length, exclude_implicits and
+    # autoload actually applied to its modulefiles.
+    printf 'modules:\n  default:\n    roots:\n      tcl: %s\n      lmod: %s\n    enable: [tcl]\n    tcl:\n      exclude_implicits: true\n      hash_length: 0\n      all:\n        autoload: none\n' \
         "$(jq -Rrn --arg value "${module_root}" '$value|@json')" \
         "$(jq -Rrn --arg value "${module_root}/lmod" '$value|@json')" > "${output}/modules.yaml"
     printf 'mirrors:\n' > "${output}/mirrors.yaml"

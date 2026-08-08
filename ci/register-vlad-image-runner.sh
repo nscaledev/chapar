@@ -11,8 +11,8 @@ Required:
   --removal-token-file PATH     Root-owned 0600 GitHub runner removal-token file
 
 Builder only:
-  --target TARGET               linux-x86_64-generic, linux-x86_64-v4, or
-                                linux-aarch64-gb300
+  --target TARGET               linux-x86_64-generic, linux-x86_64-v4,
+                                linux-aarch64-generic, or linux-aarch64-gb300
 
 Options:
   --runner-name NAME            Defaults to chapar-vlad-image-ROLE-HOSTNAME

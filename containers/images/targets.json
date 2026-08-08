@@ -46,6 +46,28 @@
         "121"
       ]
     },
+    "linux-aarch64-generic": {
+      "oci_platform": "linux/arm64",
+      "native_arch": "aarch64",
+      "spack_target": "aarch64",
+      "llvm_targets": [
+        "aarch64",
+        "nvptx"
+      ],
+      "cuda_arch": [
+        "80",
+        "86",
+        "87",
+        "89",
+        "90",
+        "90a",
+        "100",
+        "103",
+        "110",
+        "120",
+        "121"
+      ]
+    },
     "linux-aarch64-gb300": {
       "oci_platform": "linux/arm64",
       "native_arch": "aarch64",

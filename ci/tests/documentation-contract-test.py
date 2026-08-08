@@ -35,6 +35,7 @@ ACTIVE_DOCS: Final = (
     "etc/README.md",
     "docs/buildcache.md",
     "docs/ci-github-actions.md",
+    "docs/container-injection.md",
     "docs/nscale-vlad-manual-build.md",
     "docs/cve-checker.md",
     "containers/README.md",
@@ -131,6 +132,7 @@ def test_cli_registry_and_schema_contract() -> None:
     containers = load_json("containers/images/containers.json")
     assert set(mapping(targets["targets"])) == {
         "linux-aarch64-gb300",
+        "linux-aarch64-generic",
         "linux-x86_64-generic",
         "linux-x86_64-v4",
     }

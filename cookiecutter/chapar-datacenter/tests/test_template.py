@@ -105,6 +105,7 @@ def test_render_is_deterministic_and_schema_valid() -> None:
         assert datacenter.status == "example"
         assert datacenter.targets == (
             "linux-aarch64-gb300",
+            "linux-aarch64-generic",
             "linux-x86_64-generic",
             "linux-x86_64-v4",
         )

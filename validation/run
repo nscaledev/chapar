@@ -46,11 +46,19 @@ submit_test() {
   local sealed_contract="$sealed/contract.json"
   local results_root partition constraint account qos
   IFS=$'\t' read -r _ _ _ _ results_root partition constraint account qos <<< "$placement"
+  # container-smoke needs one input the selection cannot carry: the sealed .sqsh
+  # and its digest. Passed through only when the operator set them; the test
+  # verifies the path lies inside the selection's own container_outputs root and
+  # SKIPs when they are absent, so this grants no ambient path authority.
+  local image_exports=""
+  if [ -n "${CHAPAR_CONTAINER_IMAGE:-}" ] && [ -n "${CHAPAR_CONTAINER_IMAGE_SHA256:-}" ]; then
+    image_exports=",CHAPAR_CONTAINER_IMAGE=$CHAPAR_CONTAINER_IMAGE,CHAPAR_CONTAINER_IMAGE_SHA256=$CHAPAR_CONTAINER_IMAGE_SHA256"
+  fi
   if [ -n "${SLURM_JOB_ID:-}" ]; then
     CHAPAR_SELECTION="$sealed_selection" CHAPAR_SELECTION_DIGEST="$selection_digest" CHAPAR_TARGET_CONTRACT="$sealed_contract" RESULTS_ROOT="$results_root" bash "$test_file"
   else
     sbatch --wait --partition "$partition" --constraint "$constraint" --account "$account" --qos "$qos" \
-      --export="CHAPAR_SELECTION=$sealed_selection,CHAPAR_SELECTION_DIGEST=$selection_digest,CHAPAR_TARGET_CONTRACT=$sealed_contract,RESULTS_ROOT=$results_root" "$test_file"
+      --export="CHAPAR_SELECTION=$sealed_selection,CHAPAR_SELECTION_DIGEST=$selection_digest,CHAPAR_TARGET_CONTRACT=$sealed_contract,RESULTS_ROOT=$results_root${image_exports}" "$test_file"
   fi
 }
 
