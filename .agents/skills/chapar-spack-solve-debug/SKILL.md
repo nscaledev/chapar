@@ -1,22 +1,25 @@
 ---
 name: chapar-spack-solve-debug
-description: Diagnose Chapar Spack solver failures for a resolver-produced software selection. Use for concretization timeouts, provider conflicts, variants, target policy, or configuration layering.
+description: Diagnose Chapar Spack solver failures for a catalog software set and target. Use for concretization timeouts, provider conflicts, variants, target policy, or configuration layering.
 ---
 
 # Chapar solve debugging
 
-Start from the exact resolver artifact set: `selection.json`,
-`selection.sha256`, effective `spack.yaml`, and `target-policy.yaml`. Verify its
-data-center/software-set/target and release/run identity before reasoning about
-a failure. The source catalog is `envs/software/spack.yaml`; target facts and
-site policy remain in their registries/contracts.
+The environment under diagnosis is the catalog itself: export
+`CHAPAR_SOFTWARE_SET` and `CHAPAR_TARGET` and `envs/software/spack.yaml`
+composes the matching root lists through its `when:` conditions. Verify the
+target is registered with `uv run chapar target list`; its facts (Spack
+target, CUDA architectures) are explicit, never probed.
 
-Do not substitute a historical environment path, ambient profile, site file,
-or checkout lock. Use disposable resolver fixtures for offline diagnosis. A
-native concretization or config-blame investigation is a deferred target gate
-and requires explicit approval on the matching Ubuntu 24.04 builder.
+Configuration layers, lowest to highest: Spack defaults, `etc/system` (OS
+bootstrap externals only), `etc/user` (`$CHAPAR_*` interpolations), then the
+build's own `-C` scope that `release.sh` renders — which embeds the
+per-target requirements from `uv run chapar target scope <target>`. Blame a
+layer before blaming a spec.
 
-Preserve latest compiler/MPI/LLVM policy and CUDA/GDR transport requirements.
-Do not weaken constraints solely to make a solve pass. Record whether evidence
-is offline resolver evidence or native Spack evidence. Offline contract and
-selection behavior is verified; target-platform behavior not validated.
+`spack -e envs/software spec ...` and `spack -e envs/software concretize`
+are builder/operator actions on the pinned Spack — never claim an offline
+session ran them. Preserve latest compiler/MPI/LLVM policy and CUDA/GDR
+transport requirements; do not weaken constraints solely to make a solve
+pass. Record whether evidence is offline composition evidence or native
+Spack evidence.

@@ -4,6 +4,10 @@
 __pycache__/
 *.py[cod]
 
+# Project virtual environment and test caches (created by uv / pytest)
+/.venv/
+.pytest_cache/
+
 # Spack is installed per user in ~/.local/opt/spack. Do not vendor it here.
 /spack/
 
@@ -27,15 +31,12 @@ envs/*/.spack-env/
 /etc/user/package-repository.lock
 /etc/user/package_repos/
 
-# Site/datacenter-local hpcsim roots, cache roots, groups, and policy.
-/envs/hpcsim/hpcsim-site.env
-
-# Site/datacenter-local vlad roots, cache roots, groups, and policy.
-/envs/vlad/vlad-site.env
+# Per-machine Chapar site settings (copy of etc/chapar-site.env.example).
+/etc/chapar-site.env
 
 # Agent working artifacts (OpenCode planning workspace, link-scopes backups)
 .omo/
 /etc/*.bak.*/
 
-# Legacy local environment directories; Chapar only tracks envs/hpcsim.
+# Legacy local environment directories; Chapar only tracks envs/software.
 /envs/skipper*/

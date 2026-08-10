@@ -11,7 +11,13 @@ POLICY_PATHS: Final = frozenset(
         PurePosixPath("AGENTS.md"),
         PurePosixPath(".agents/skills/chapar-release-helper/SKILL.md"),
         PurePosixPath(".agents/skills/chapar-spack-env-change/SKILL.md"),
-        PurePosixPath("docs/ci-github-actions.md"),
+    }
+)
+#: Tracked fixtures that are deliberately malformed inputs for their own
+#: parsers; the audit must not treat unparseable-by-design bytes as findings.
+MALFORMED_FIXTURE_PATHS: Final = frozenset(
+    {
+        PurePosixPath("envs/software/tests/fixtures/malformed.json"),
     }
 )
 POLICY_TOKENS: Final = ("never", "do not", "forbidden", "must not")

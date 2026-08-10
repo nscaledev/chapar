@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Shared install-tree padding helpers.
 #
-# Sourced by envs/software/release.sh and etc/chapar-selection.sh so both emit
-# the same `config:install_tree` shape. When these diverged, a scope rendered by
-# one tool installed to unpadded prefixes inside a padded store built by the
-# other, silently defeating buildcache reuse and prefix relocation.
+# Sourced by envs/software/release.sh, the only scope renderer left. Any future
+# renderer must reuse these helpers: when two renderers diverged historically, a
+# scope rendered by one tool installed to unpadded prefixes inside a padded
+# store built by the other, silently defeating buildcache reuse and prefix
+# relocation.
 
 # Fallback used only for a store that has no placeholder chain yet.
 CHAPAR_INSTALL_TREE_PADDED_LENGTH=256

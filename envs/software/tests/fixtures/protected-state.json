@@ -6,11 +6,6 @@
   ],
   "tracked_files": [
     {
-      "path": "envs/hpcsim/spack.lock",
-      "head_blob": "d70788d4c3f8225db334562bcca7d97d19a398fc",
-      "sha256": "d6df5eed5efc36126f59c8aeedfb048ae42cb6f7e66dea5ef8ecf375c4b68bea"
-    },
-    {
       "path": "containers/images/sources-lock.json",
       "head_blob": "988bab026e768b0d4a20706fd68380d7cba94f52",
       "sha256": "e093e3e213af0351a10aed5a5bbef0b27051c4f0b36503b77453d810a7dd9d12"

@@ -5,12 +5,11 @@
 # fetch path an auditable repository fact instead of whatever the vendored Spack
 # checkout's defaults scope happens to carry.
 #
-# Binary mirrors are deliberately absent. Buildcache identity is per selection:
-# etc/chapar-selection.sh render_scopes and envs/software/release.sh make_scope
-# emit the ordered read-only `chapar-seed-NNN` seeds from the target contract
-# followed by exactly one writable `chapar-buildcache` with autopush. A binary
-# mirror committed to a persistent scope would grant ambient cache authority to
-# every invocation, including ones with no verified selection.
+# Binary mirrors are deliberately absent. Buildcache identity is per build:
+# envs/software/release.sh make_scope emits the ordered read-only
+# `chapar-seed-NNN` seeds from CHAPAR_SEED_MIRRORS followed by exactly one
+# writable `chapar-buildcache`. A binary mirror committed to a persistent scope
+# would grant ambient cache authority to every invocation.
 mirrors:
   chapar-source:
     binary: false

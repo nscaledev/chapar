@@ -1,269 +1,117 @@
 spack:
   repos: []
 
+  # Software roots, grouped by set membership. Selection is driven by two
+  # explicit environment variables exported from the site settings
+  # (etc/chapar-defaults.sh):
+  #
+  #   CHAPAR_SOFTWARE_SET  vlad | hpcsim | all   (unset means all: the union)
+  #   CHAPAR_TARGET        a key of containers/images/targets.json; only its
+  #                        linux-x86_64-* / linux-aarch64-* family matters here
+  #
+  # A definition whose `when:` is false becomes an empty list, so the $-
+  # references under specs: are no-ops for deselected groups. Spack target,
+  # LLVM target, and CUDA architecture requirements are deliberately absent
+  # from these root specs: they are injected per target as packages:
+  # requirements by `chapar target scope` so transitive instances (for example
+  # gdrcopy under ucx) are bound too.
   definitions:
-  - root_shared_root-3eb7278e7eef:
+  - shared_roots:
     - autoconf
-  - root_shared_root-251d177e3e7d:
     - cmake
-  - root_shared_root-765b1a10cf7c:
     - cuda-memtest
-  - root_shared_root-bc14a4b669e6:
     - cuda@13
-  - root_shared_root-e9532941e267:
     - darshan-runtime+mpi+hdf5+parallel-netcdf
-  - root_shared_root-0caad04c6b09:
     - fio
-  - root_shared_root-f45a9565bfba:
     - gcc@15+profiled %gcc
-  - root_shared_root-975a18bfe9d3:
     - h5bench+exerciser+metadata
-  - root_shared_root-101f73633df4:
     - hpcg+openmp
-  - root_shared_root-dc5d02ea9c44:
     - hpctoolkit@2026.0.1+cuda+mpi+python+papi+viewer~docs~opencl~level_zero~rocm~auditor_default build_system=meson ^python@3.12:3.12+tkinter
-  - root_shared_root-9c64beb8d04b:
     - hpl+openmp
-  - root_shared_root-ffb1068d3467:
     - ior+hdf5+ncmpi
-  - root_shared_root-ca090e1b19a8:
     - libfabric@2+cuda+gdrcopy fabrics=mlx,rxm,verbs ^cuda@13
-  - root_shared_root-ba76e035e537:
     - likwid
-  - root_shared_root-d68147e31c4c:
     - mdtest
-  - root_shared_root-9b209f1f441a:
     - meson
-  - root_shared_root-544825951771:
     - ninja
-  - root_shared_root-0d5ffd33e266:
     - numactl
-  - root_shared_root-42cc100917de:
     - osu-micro-benchmarks@7.5.2
-  - root_shared_root-092f9864d3bf:
     - papi+infiniband+cuda
-  - root_shared_root-454d80836e7f:
     - pmix@6
-  - root_shared_root-a263a2a06344:
     - python@3.12:3.12+optimizations+tkinter
-  - root_shared_root-40510b00020d:
     - qperf+verbs
-  - root_shared_root-d1a051dc64a8:
     - scalasca
-  - root_shared_root-84b3a1ff7ace:
     - scorep+mpi+papi~cuda
-  - root_shared_root-040783436804:
     - stream+openmp
-  - root_shared_root-7badde06b1d0:
     - tau+mpi+papi+openmp~cuda
-  - root_shared_root-047d00d2198d:
     - babelstream+cuda
-  - root_shared_root-0ff7c7cb0e5e:
     - caliper+mpi+papi+cuda+libunwind+libdw
-  - root_shared_root-ab25da429730:
     - ccache
-  - root_vlad_only_root-62430b7c5237:
-    - extrae+papi~cuda
-  - root_shared_root-baad63c4d178:
     - hwloc+cuda+pci~nvml
-  - root_vlad_only_root-d29f91e17bbb:
-    - ipm+papi
-  - root_vlad_only_root-57911f10405b:
-    - mpip
-  - root_shared_root-f8e3818144f6:
     - nccl-tests+mpi+cuda ^nccl@2.29.7-1
-  - root_shared_root-fd77c9e29d4c:
     - nccl@2.29.7-1
-  - root_shared_root-86815abaaedc:
     - nvbandwidth+cuda
-  - root_shared_root-e3a0c53eebc8:
     - nvtop+cuda support=nvidia
-  - root_shared_root-e8baab3437cc:
     - openmpi@5+cuda+fortran~internal-pmix fabrics=verbs,ucx schedulers=slurm ^pmix@6 ^ucx@1.20.1+cuda+gdrcopy+dc+rc+rdmacm+thread_multiple+ud+verbs~xpmem ^cuda@13
-  - root_vlad_only_root-0d36eb7b1a39:
-    - py-mpi4py
-  - root_vlad_only_root-a3de2be90c4b:
-    - py-py-spy
-  - root_shared_root-637657df0a60:
     - ucx@1.20.1+cuda+gdrcopy+dc+rc+rdmacm+thread_multiple+ud+verbs~xpmem ^cuda@13
-  - root_hpcsim_only_root-179d8ff82a8b:
+  - vlad_roots:
+    - extrae+papi~cuda
+    - ipm+papi
+    - mpip
+    - py-mpi4py
+    - py-py-spy
+    when: env.get("CHAPAR_SOFTWARE_SET", "all") in ("vlad", "all")
+  - hpcsim_roots:
     - adios2+mpi+fortran+hdf5~libcatalyst~python %gcc ^openmpi@5
-  - root_hpcsim_only_root-f28cc4c9e800:
     - cdo+netcdf+hdf5+openmp grib2=eccodes %gcc
-  - root_hpcsim_only_root-197818d4a3f1:
     - cgns+mpi+hdf5+fortran %gcc ^openmpi@5
-  - root_hpcsim_only_root-e6e1bad50226:
     - eccodes+tools+netcdf+png %gcc
-  - root_hpcsim_only_root-f6aa777c3768:
     - exodusii+mpi+fortran %gcc ^openmpi@5
-  - root_hpcsim_only_root-a53aed35697e:
     - ffmpeg %gcc
-  - root_hpcsim_only_root-e3a8ed3f3013:
     - fftw+mpi+openmp precision=double,float %gcc
-  - root_hpcsim_only_root-78ffc06db15e:
     - gdb+python ^python@3.12:3.12+tkinter
-  - root_hpcsim_only_root-d41b44f9f46e:
     - hdf5+mpi+fortran+hl
-  - root_hpcsim_only_root-082a1dbbb94c:
     - hdf5-vol-async %gcc ^openmpi@5
-  - root_hpcsim_only_root-91a40d72f965:
     - imagemagick@7.1.1-39 ^python@3.12:3.12+optimizations+tkinter
-  - root_hpcsim_only_root-ad38423ed00b:
     - libffi@3.2.1
-  - root_hpcsim_only_root-3981dccb394a:
     - 'libffi@3.4.7:'
-  - root_hpcsim_only_root-6ea94b50127b:
     - libpressio+mpi+openmp+hdf5+zfp+netcdf~python %gcc ^openmpi@5
-  - root_hpcsim_only_root-71f66d958177:
     - nccmp %gcc
-  - root_hpcsim_only_root-9df3d2e92bcc:
     - nco+openmp %gcc
-  - root_hpcsim_only_root-c38915c5a1e2:
     - ncview %gcc
-  - root_hpcsim_only_root-7e57cecf3811:
     - neovim
-  - root_hpcsim_only_root-4254cb101dd3:
     - netcdf-c+mpi+parallel-netcdf
-  - root_hpcsim_only_root-eb1cbe52e9a8:
     - netcdf-fortran
-  - root_hpcsim_only_root-fba41e721039:
     - netlib-scalapack
-  - root_hpcsim_only_root-5ca4a7c61d34:
     - npm@11.2.0
-  - root_hpcsim_only_root-2c849f07405f:
     - nvshmem+cuda+mpi+ucx+libfabric+nccl ^nccl@2.29.7-1
-  - root_hpcsim_only_root-8a9b235e4185:
     - openblas threads=openmp %gcc
-  - root_hpcsim_only_root-a1dd97c20282:
     - parallel-netcdf
-  - root_hpcsim_only_root-ca27ad8b0bbc:
     - pkgconf
-  - root_hpcsim_only_root-d3d790ca1b5c:
     - pulseaudio@13.0 %gcc ^fftw~mpi
-  - root_hpcsim_only_root-5aa92c1b7938:
     - python@3.10:3.10+optimizations+tkinter
-  - root_hpcsim_only_root-916f4a317883:
     - python@3.11:3.11+optimizations+tkinter
-  - root_hpcsim_only_root-059c830dc9c0:
     - seacas@2025-10-14+mpi+adios2~fortran~libcatalyst+cgns+applications~legacy~x11 %gcc@15 ^openmpi@5
-  - root_hpcsim_only_root-b8e4ade0f97d:
     - silo+mpi+hdf5+fortran~python %gcc ^openmpi@5
-  - root_hpcsim_only_root-0b921a8bd614:
     - sz+openmp+hdf5+netcdf+fortran %gcc
-  - root_hpcsim_only_root-9daf09c8ca7a:
     - tcl
-  - root_hpcsim_only_root-1ec22d56dbbc:
     - tk
-  - root_hpcsim_only_root-adb519257aeb:
     - tmux
-  - root_hpcsim_only_root-6717d7d90e34:
     - valgrind+mpi
-  - root_hpcsim_only_root-ba11591ce8c6:
     - zfp+openmp+fortran %gcc
-  - root_architecture_limited_x86_64_root-f660baf70174:
+    when: env.get("CHAPAR_SOFTWARE_SET", "all") in ("hpcsim", "all")
+  # Intel MPI ships x86_64 binaries only. Membership follows the declared
+  # target, never the machine the solve runs on.
+  - hpcsim_x86_only_roots:
     - intel-mpi-benchmarks@2021.7
-  - root_architecture_limited_x86_64_root-f5060d194d19:
     - intel-oneapi-mpi@2021.17.0+generic-names+external-libfabric ^libfabric@2+cuda+gdrcopy fabrics=mlx,rxm,verbs ^cuda@13
+    when: env.get("CHAPAR_SOFTWARE_SET", "all") in ("hpcsim", "all") and env.get("CHAPAR_TARGET", "").startswith("linux-x86_64-")
 
-  - group_shared:
-    - $root_shared_root-3eb7278e7eef
-    - $root_shared_root-251d177e3e7d
-    - $root_shared_root-765b1a10cf7c
-    - $root_shared_root-bc14a4b669e6
-    - $root_shared_root-e9532941e267
-    - $root_shared_root-0caad04c6b09
-    - $root_shared_root-f45a9565bfba
-    - $root_shared_root-975a18bfe9d3
-    - $root_shared_root-101f73633df4
-    - $root_shared_root-dc5d02ea9c44
-    - $root_shared_root-9c64beb8d04b
-    - $root_shared_root-ffb1068d3467
-    - $root_shared_root-ca090e1b19a8
-    - $root_shared_root-ba76e035e537
-    - $root_shared_root-d68147e31c4c
-    - $root_shared_root-9b209f1f441a
-    - $root_shared_root-544825951771
-    - $root_shared_root-0d5ffd33e266
-    - $root_shared_root-42cc100917de
-    - $root_shared_root-092f9864d3bf
-    - $root_shared_root-454d80836e7f
-    - $root_shared_root-a263a2a06344
-    - $root_shared_root-40510b00020d
-    - $root_shared_root-d1a051dc64a8
-    - $root_shared_root-84b3a1ff7ace
-    - $root_shared_root-040783436804
-    - $root_shared_root-7badde06b1d0
-    - $root_shared_root-047d00d2198d
-    - $root_shared_root-0ff7c7cb0e5e
-    - $root_shared_root-baad63c4d178
-    - $root_shared_root-f8e3818144f6
-    - $root_shared_root-fd77c9e29d4c
-    - $root_shared_root-86815abaaedc
-    - $root_shared_root-e3a0c53eebc8
-    - $root_shared_root-e8baab3437cc
-    - $root_shared_root-637657df0a60
-    - $root_shared_root-ab25da429730
-  - group_vlad_only:
-    - $root_vlad_only_root-62430b7c5237
-    - $root_vlad_only_root-d29f91e17bbb
-    - $root_vlad_only_root-57911f10405b
-    - $root_vlad_only_root-0d36eb7b1a39
-    - $root_vlad_only_root-a3de2be90c4b
-  - group_hpcsim_only:
-    - $root_hpcsim_only_root-179d8ff82a8b
-    - $root_hpcsim_only_root-f28cc4c9e800
-    - $root_hpcsim_only_root-197818d4a3f1
-    - $root_hpcsim_only_root-e6e1bad50226
-    - $root_hpcsim_only_root-f6aa777c3768
-    - $root_hpcsim_only_root-a53aed35697e
-    - $root_hpcsim_only_root-e3a8ed3f3013
-    - $root_hpcsim_only_root-78ffc06db15e
-    - $root_hpcsim_only_root-d41b44f9f46e
-    - $root_hpcsim_only_root-082a1dbbb94c
-    - $root_hpcsim_only_root-91a40d72f965
-    - $root_hpcsim_only_root-ad38423ed00b
-    - $root_hpcsim_only_root-3981dccb394a
-    - $root_hpcsim_only_root-6ea94b50127b
-    - $root_hpcsim_only_root-71f66d958177
-    - $root_hpcsim_only_root-9df3d2e92bcc
-    - $root_hpcsim_only_root-c38915c5a1e2
-    - $root_hpcsim_only_root-7e57cecf3811
-    - $root_hpcsim_only_root-4254cb101dd3
-    - $root_hpcsim_only_root-eb1cbe52e9a8
-    - $root_hpcsim_only_root-fba41e721039
-    - $root_hpcsim_only_root-5ca4a7c61d34
-    - $root_hpcsim_only_root-2c849f07405f
-    - $root_hpcsim_only_root-8a9b235e4185
-    - $root_hpcsim_only_root-a1dd97c20282
-    - $root_hpcsim_only_root-ca27ad8b0bbc
-    - $root_hpcsim_only_root-d3d790ca1b5c
-    - $root_hpcsim_only_root-5aa92c1b7938
-    - $root_hpcsim_only_root-916f4a317883
-    - $root_hpcsim_only_root-059c830dc9c0
-    - $root_hpcsim_only_root-b8e4ade0f97d
-    - $root_hpcsim_only_root-0b921a8bd614
-    - $root_hpcsim_only_root-9daf09c8ca7a
-    - $root_hpcsim_only_root-1ec22d56dbbc
-    - $root_hpcsim_only_root-adb519257aeb
-    - $root_hpcsim_only_root-6717d7d90e34
-    - $root_hpcsim_only_root-ba11591ce8c6
-  - group_architecture_limited_x86_64:
-    - $root_architecture_limited_x86_64_root-f660baf70174
-    - $root_architecture_limited_x86_64_root-f5060d194d19
-  - software_set_vlad:
-    - $group_shared
-    - $group_vlad_only
-  - software_set_hpcsim:
-    - $group_shared
-    - $group_hpcsim_only
-    - $group_architecture_limited_x86_64
-  - software_set_all:
-    - $group_shared
-    - $group_vlad_only
-    - $group_hpcsim_only
-    - $group_architecture_limited_x86_64
-
-  specs: []
+  specs:
+  - $shared_roots
+  - $vlad_roots
+  - $hpcsim_roots
+  - $hpcsim_x86_only_roots
 
   packages:
     all:

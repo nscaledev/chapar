@@ -1,27 +1,28 @@
 ---
 name: chapar-vlad-image
-description: Modify or debug selected Chapar Pyxis image planning, source custody, registries, preflight, release receipts, or vlad-image runner provisioning. Use for containers/images and related CI scripts.
+description: Modify or debug the Chapar container-image pipeline — planning, injection, preflight, registries, source custody, or publication. Use for chapar image and containers/images work.
 ---
 
 # Chapar image pipeline
 
-Load target/container/source registries rather than creating duplicated base or
-target dictionaries. Public IDs remain `nvidia-vlad` and `ubuntu-hpcsim`;
-historical internal `vlad-image` paths, units, and variables remain compatible
-but do not define a third container.
+The pipeline is `chapar image` (`src/chapar/image/`): `resolve`, `preflight`,
+`build`, `verify-release`, `publish`. It consumes a verified immutable
+release directory (`--release-dir`) and the committed registries —
+`containers/images/targets.json` (target facts), `containers.json`
+(digest-pinned bases; public IDs stay `nvidia-vlad` and `ubuntu-hpcsim`),
+and `sources-lock.json` (source custody).
 
-An image consumes a selection-bound immutable release and verifies data center,
-software set, target, release/run identity, contract/registry/selection
-digests, effective manifest, target policy, metadata, and release-local lock.
-Preserve build-time absolute prefixes, link/run closure, one module destination,
-base payload checks, descriptor digests, and role custody.
+`sources-lock.json` is globally `blocked`: no real image build, import,
+export, or publication until every category and platform descriptor is
+resolved and approved. A resolved category never overrides the global block.
+`--plan-only` is the only mode useful on a workstation — pure reads.
 
-`containers/images/sources-lock.json` is globally `blocked`; every image build
-must stop before candidate/final writes. A resolved individual category never
-overrides the global block. Use only plan/fixture tests and the canonical
-offline flow in `README.md`; never import/export an image from an agent session.
+Preserve the injection invariants (`docs/container-injection.md`): store
+prefixes copied at their identical absolute paths under `/opt/chapar`,
+link/run closure complete, the base rootfs additive-only and provably
+undisturbed, modules opt-in. Delivery requires `container` in
+`CHAPAR_DELIVER` unless `--force`. Sealed images go through
+`chapar image publish` with expected sha256/size.
 
-Target-platform gates include source approval, preflight on each architecture,
-Enroot, base glibc/module availability, CPU/GB300 features, Slurm/Pyxis/PMIx,
-runtime validation, and publisher custody. Offline contract and selection
-behavior is verified; target-platform behavior not validated.
+Test with `uv run --group dev pytest tests/image`. Enroot operations,
+per-architecture preflight, and container smoke are operator gates.

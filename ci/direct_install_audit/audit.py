@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from .documents import candidates_for
 from .model import (
     AUDIT_PATH,
+    MALFORMED_FIXTURE_PATHS,
     POLICY_PATHS,
     RELEASE_PATHS,
     AuditInputError,
@@ -22,21 +23,17 @@ def is_internal_release(candidate: Candidate) -> bool:
     if candidate.path not in RELEASE_PATHS:
         return False
     tokens = candidate.tokens
-    if candidate.function == "install_release_prerequisite":
-        return not candidate.controls and tokens == ("spack", "-C", "${scope_dir}", "install", "$@", "${spec}")
+    if candidate.function == "bootstrap_install":
+        return candidate.controls == ("if",) and tokens == ("spack", "-C", "${BUILD_SCOPE_DIR}", "install", "$@")
+    if candidate.function == "install_staged_roots":
+        return candidate.controls == ("for",) and tokens == (
+            "spack", "-e", "${RELEASE_STAGING}", "-C", "${BUILD_SCOPE_DIR}", "install", "--only-concrete", "/${hash}",
+        )
     if candidate.function == "cmd_build":
-        accepted = {
-            ("spack", "-e", "${ENV_PATH}", "-C", "${scope_dir}", "install", "--only-concrete", "${install_args[@]}"),
-            ("spack", "-e", "${RELEASE_STAGING}", "-C", "${BUILD_SCOPE_DIR}", "install", "--only-concrete"),
-        }
-        return not candidate.controls and tokens in accepted
-    if candidate.function != "install_cuda_libfabric_specs":
-        return False
-    accepted = {
-        ("spack", "-e", "${ENV_PATH}", "-C", "${BUILD_SCOPE_DIR}", "install", "--only-concrete", "${install_args_ref[@]}", "--only", "dependencies", "${spec_hash}"),
-        ("spack", "-e", "${ENV_PATH}", "-C", "${BUILD_SCOPE_DIR}", "install", "--only-concrete", "--dirty", "${install_args_ref[@]}", "--only", "package", "${spec_hash}"),
-    }
-    return candidate.controls == ("for",) and tokens in accepted
+        return not candidate.controls and tokens == (
+            "spack", "-e", "${RELEASE_STAGING}", "-C", "${BUILD_SCOPE_DIR}", "install", "--only-concrete",
+        )
+    return False
 
 
 def audit_documents(documents: Mapping[PurePosixPath, str]) -> AuditResult:
@@ -81,6 +78,8 @@ def parse_file_list(payload: bytes) -> tuple[PurePosixPath, ...]:
 def load_documents(root: Path, paths: Iterable[PurePosixPath]) -> dict[PurePosixPath, str]:
     documents: dict[PurePosixPath, str] = {}
     for path in paths:
+        if path in MALFORMED_FIXTURE_PATHS:
+            continue
         absolute_path = root / path
         if not absolute_path.is_file():
             continue

@@ -1,30 +1,30 @@
 ---
 name: chapar-validation
-description: Modify or debug selection-aware Chapar validation plans, root/module inventory, integrity checks, hardware tiers, verdicts, or result placement under validation/.
+description: Modify or debug release-bound Chapar validation plans, suites, fixture mode, result manifests, verdicts, or result placement under validation/.
 ---
 
 # Chapar validation
 
-Validation requires `selection.json`, its exact digest, and the matching target
-contract. It derives one module tree, exact selected roots/checks, Slurm
-placement, and a tuple/release/run result namespace. Do not restore environment
-dispatch or architecture-directory scanning.
+Validation binds to one immutable release directory: `uv run chapar validate
+plan --release-dir <release>` verifies digests/identity/target facts and
+derives the module tree and expected root inventory from the release itself;
+`./validation/run --release-dir <release> <suite>|all|list` dispatches the
+sbatch suites; `uv run chapar validate analyze` does outlier analysis of a
+suite's results directory. Results land under `CHAPAR_VALIDATION_ROOT`,
+namespaced by tuple, release, and run id (site settings supply the root and
+`CHAPAR_SLURM_*`; `CHAPAR_DRY_RUN=1` prints instead of submitting).
 
-Integrity remains hardware-free. Preserve exit 77 as SKIP and stable
-PASS/WARN/FAIL/SKIP JSON and Prometheus fields. Unknown/mixed selections,
-missing roots, and contract/digest drift fail before module load/submission.
+Suites record outcomes through `verdict.sh` and let
+`validation_result_finalize` own the exit code (PASS/WARN 0, FAIL 1, SKIP
+77); never write a verdict or exit status by hand. The result-manifest
+contract (`validation/lib/result-manifest.schema.json`) includes the release
+identity block — recorded from the release's `metadata.json` plus the
+run-time `spack.lock` digest, all-or-nothing so evidence never names half a
+release. Keep the bound-suite list in `result-manifest.sh` equal to the
+schema's `suite` enum. Hardware expectations belong in tracked
+`validation/config/capability.yaml`.
 
-Suites bound to the result contract in `validation/lib` record outcomes through
-`verdict.sh` and let `validation_result_finalize` own the exit code; do not write
-a verdict or exit status by hand. Keep the bound-suite list in
-`result-manifest.sh` equal to the `suite` enum in `result-manifest.schema.json`.
-Manual runs are never CI-authoritative. Hardware expectations belong in tracked
-`validation/config/capability.yaml`, never an ambient site file, and every
-hardware suite must stay runnable offline through its `validation/fixtures/`
-cases with `VALIDATION_TEST_MODE=1`.
-
-Run parser/dry-run fixtures only unless the user explicitly approves target
-execution. Never claim a plan ran Slurm, loaded modules, or validated hardware.
-`/resources/chapar/vlad` and `/resources/chapar/hpcsim` are immutable legacy
-shadow/canary roots, not discovery inputs. Offline contract and selection
-behavior is verified; target-platform behavior not validated.
+Every hardware suite must stay runnable offline through its
+`validation/fixtures/` cases with `VALIDATION_TEST_MODE=1`; `make test` runs
+those fixture suites. Offline fixtures prove the evaluators, never a GPU, a
+fabric, or a filesystem — real runs are operator gates.

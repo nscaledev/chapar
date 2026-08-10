@@ -10,9 +10,10 @@
 # pyxis-smoke.txt artifact that ci/vlad_source_approval/image_receipts.py digests
 # into the runtime receipt.
 #
-# Custody: the image path must lie inside the selection's own container_outputs
-# root and match a digest supplied alongside it. An ambient path is refused, the
-# same way every other consumer refuses ambient authority.
+# Custody: the image path must lie inside the site's container output root
+# (CHAPAR_CONTAINER_OUTPUT_ROOT) and match a digest supplied alongside it. An
+# arbitrary ambient path is refused, the same way every other consumer refuses
+# ambient authority.
 #
 # Fixture mode evaluates a recorded in-container observation instead, so the
 # evaluator below is exercised in CI with no image, no enroot and no GPU. The
@@ -38,22 +39,29 @@ fi
 validation_fixture_guard
 fixture="$(validation_fixture_dir VALIDATION_TEST_CONTAINER_SMOKE)"
 
+# Builders have no uv; the chapar package runs stdlib-only from the checkout.
+chapar_validate() {
+    PYTHONPATH="${repository_root}/src${PYTHONPATH:+:${PYTHONPATH}}" python3 -m chapar validate "$@"
+}
+
 if [ -z "${fixture}" ]; then
-    # Live runs go through the authority gateway: a verified selection, the
-    # canonical contract, and the tuple they agree on.
-    selection="${CHAPAR_SELECTION:?CHAPAR_SELECTION is required}"
-    selection_digest="${CHAPAR_SELECTION_DIGEST:?CHAPAR_SELECTION_DIGEST is required}"
-    contract="${CHAPAR_TARGET_CONTRACT:?CHAPAR_TARGET_CONTRACT is required}"
-    identity="$(python3 "${validation_dir}/selection.py" shell --selection "${selection}" --selection-digest "${selection_digest}" --contract "${contract}" --test container-smoke)"
-    IFS=$'\t' read -r datacenter software_set target _module_path result_namespace _partition _constraint _account _qos <<< "${identity}"
+    # Live runs go through the release gateway: a verified immutable release
+    # directory and the identity its metadata records.
+    release_dir="${CHAPAR_RELEASE_DIR:?CHAPAR_RELEASE_DIR is required}"
+    # An exported RESULTS_ROOT (validation/run always sets one) is forwarded so
+    # a manual invocation needs no site settings beyond the release directory.
+    plan_args=(--release-dir "${release_dir}" --test container-smoke)
+    if [ -n "${RESULTS_ROOT:-}" ]; then plan_args+=(--results-root "${RESULTS_ROOT}"); fi
+    identity="$(chapar_validate plan --format shell "${plan_args[@]}")"
+    IFS=$'\t' read -r software_set target release_id _release_run_id _module_path result_namespace <<< "${identity}"
     results_root="${RESULTS_ROOT:-${result_namespace}}"
 else
     # Fixture runs evaluate a recorded observation, so they deliberately do not
-    # consult the selection: there is no release, no image and no tuple to verify,
-    # and requiring one would make the evaluator untestable without a resolver.
-    datacenter=fixture
+    # consult a release: there is no release, no image and no tuple to verify,
+    # and requiring one would make the evaluator untestable without a build.
     software_set=fixture
     target=fixture
+    release_id=fixture
     results_root="${RESULTS_ROOT:?RESULTS_ROOT is required in fixture mode}"
 fi
 node="${SLURM_NODELIST:-$(hostname -s)}"
@@ -68,22 +76,25 @@ container_outputs=""
 module_destination=""
 store=""
 if [ -z "${fixture}" ]; then
-    # The in-image module destination is a container-registry fact, and the outputs
-    # root is a selection fact. Neither is re-derived from the environment.
-    read -r container_outputs module_destination store <<< "$(python3 - "${selection}" "${repository_root}/containers/images/containers.json" <<'PY'
+    # The in-image module destination is a container-registry fact keyed by the
+    # site's CHAPAR_CONTAINER_BASE, the outputs root is the site's
+    # CHAPAR_CONTAINER_OUTPUT_ROOT, and the install tree is the release's own
+    # recorded root. Nothing is re-derived from the job environment beyond
+    # those declared facts.
+    if [ -z "${CHAPAR_CONTAINER_BASE:-}" ] || [ -z "${CHAPAR_CONTAINER_OUTPUT_ROOT:-}" ]; then
+        validation_resource_unavailable 'no container delivery is configured for this target' optional
+    fi
+    container_outputs="${CHAPAR_CONTAINER_OUTPUT_ROOT}"
+    read -r module_destination store <<< "$(python3 - "${CHAPAR_CONTAINER_BASE}" "${repository_root}/containers/images/containers.json" "${release_dir}/metadata.json" <<'PY'
 import json
 import sys
 
-selection = json.load(open(sys.argv[1]))
-registry = json.load(open(sys.argv[2]))["containers"]
-selected = selection["containers"]
-if len(selected) != 1:
-    raise SystemExit("selection must name exactly one container for a container smoke test")
-print(
-    selection["paths"]["container_outputs"],
-    registry[selected[0]]["module_destination"],
-    selection["paths"]["install_tree"],
-)
+base, registry_path, metadata_path = sys.argv[1:]
+registry = json.load(open(registry_path))["containers"]
+if base not in registry:
+    raise SystemExit(f"CHAPAR_CONTAINER_BASE is not a registered container: {base}")
+metadata = json.load(open(metadata_path))
+print(registry[base]["module_destination"], metadata["roots"]["install_tree"])
 PY
 )"
     if [ -z "${CHAPAR_CONTAINER_IMAGE:-}" ] || [ -z "${CHAPAR_CONTAINER_IMAGE_SHA256:-}" ]; then
@@ -94,7 +105,7 @@ PY
     case "${image}" in
         "${container_outputs}"/*) ;;
         *)
-            validation_set_verdict FAIL 'container image is outside the selected container_outputs root'
+            validation_set_verdict FAIL 'container image is outside the site container output root'
             exit 1
             ;;
     esac
@@ -110,11 +121,10 @@ PY
     command -v enroot >/dev/null 2>&1 || validation_resource_unavailable 'enroot runtime' optional
     srun --help 2>&1 | grep -q -- '--container-image' || validation_resource_unavailable 'Pyxis SPANK plugin' optional
 
-    # Root module checks come from the selection, so this asserts the same
-    # inventory the bare-metal integrity suite asserts, resolved in the container.
-    python3 "${validation_dir}/selection.py" checks \
-        --selection "${selection}" --selection-digest "${selection_digest}" \
-        --contract "${contract}" --test container-smoke > "${results_dir}/root-checks.tsv"
+    # Root module checks come from the release-local spack.lock, so this asserts
+    # the same inventory the bare-metal integrity suite asserts, resolved in the
+    # container.
+    chapar_validate plan --format checks "${plan_args[@]}" > "${results_dir}/root-checks.tsv"
 
     # The checks file lives on the host, so it has to be mounted in: a container
     # cannot read a host path merely because the suite knows its name.
@@ -231,11 +241,11 @@ PY
 fi
 
 # One evaluator for both paths.
-python3 - "${observed_path}" "${report_path}" "${fixture}" "${datacenter}" "${software_set}" "${target}" <<'PY'
+python3 - "${observed_path}" "${report_path}" "${fixture}" "${release_id}" "${software_set}" "${target}" <<'PY'
 import json
 import sys
 
-observed_path, report_path, fixture, datacenter, software_set, target = sys.argv[1:]
+observed_path, report_path, fixture, release_id, software_set, target = sys.argv[1:]
 observed = json.load(open(observed_path))
 failures: list[str] = []
 warnings: list[str] = []
@@ -292,7 +302,7 @@ if fixture:
 
 report = {
     "suite": "container-smoke",
-    "datacenter": datacenter,
+    "release_id": release_id,
     "software_set": software_set,
     "target": target,
     "fixture": fixture or None,

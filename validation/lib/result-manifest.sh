@@ -84,11 +84,44 @@ PY
         return 2
     fi
 
+    # Release identity: evidence must record which immutable release the suite
+    # ran against. CHAPAR_RELEASE_DIR is the concrete release directory
+    # validation/run resolved and exported; fixture and standalone runs have
+    # none, and their manifests simply carry no release block. A release that
+    # cannot be described is a broken handshake, not a hardware condition, so
+    # it fails rather than skips.
+    VALIDATION_RELEASE_JSON=""
+    if [ -n "${CHAPAR_RELEASE_DIR:-}" ]; then
+        if ! VALIDATION_RELEASE_JSON="$(python3 - "${CHAPAR_RELEASE_DIR}" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+release = Path(sys.argv[1])
+identity = json.loads((release / "metadata.json").read_text(encoding="utf-8"))["identity"]
+# The lock digest is recomputed from the bytes on disk at run time: the
+# manifest records what the suite actually saw, and `chapar validate plan`
+# is what ties those bytes back to the metadata digest before submission.
+print(json.dumps({
+    "software_set": identity["software_set"],
+    "target": identity["target"],
+    "release_id": identity["release_id"],
+    "run_id": identity["run_id"],
+    "release_lock_sha256": hashlib.sha256((release / "spack.lock").read_bytes()).hexdigest(),
+}))
+PY
+)"; then
+            printf 'cannot record release identity from %s\n' "${CHAPAR_RELEASE_DIR}" >&2
+            return 2
+        fi
+    fi
+
     VALIDATION_SUITE="${suite}"
     VALIDATION_RESULTS_ROOT="${results_root}"
-    # RESULTS_ROOT is already namespaced by tuple and run id (selection.py derives
-    # it from the contract's validation_work class), so the manifest adds only
-    # <suite>/<VALIDATION_RUN_ID>/<node> beneath it.
+    # RESULTS_ROOT is already namespaced by tuple, release, and validation-run
+    # id (chapar validate plan derives it from CHAPAR_VALIDATION_ROOT), so the
+    # manifest adds only <suite>/<VALIDATION_RUN_ID>/<node> beneath it.
     VALIDATION_RUN_DIR="${results_root}/${suite}/${VALIDATION_RUN_ID}"
     VALIDATION_NODE_DIR="${VALIDATION_RUN_DIR}/${node}"
     if [ -e "${VALIDATION_RUN_DIR}" ]; then
@@ -219,20 +252,23 @@ PY
     manifest="${VALIDATION_RUN_DIR}/suite-manifest.json"
     verdict_code="$(validation_result_verdict_code "${verdict}")"
 
-    validation_result_write_atomic_json "${summary}" "$(python3 - "${VALIDATION_SUITE}" "${VALIDATION_RUN_ID}" "${VALIDATION_RESULT_MODE}" "${VALIDATION_CI_AUTHORITATIVE}" "${verdict}" "${reason}" "${VALIDATION_UNAVAILABLE_POLICY}" "${VALIDATION_THRESHOLD_POLICY}" "${command_status}" <<'PY'
+    validation_result_write_atomic_json "${summary}" "$(python3 - "${VALIDATION_SUITE}" "${VALIDATION_RUN_ID}" "${VALIDATION_RESULT_MODE}" "${VALIDATION_CI_AUTHORITATIVE}" "${verdict}" "${reason}" "${VALIDATION_UNAVAILABLE_POLICY}" "${VALIDATION_THRESHOLD_POLICY}" "${command_status}" "${VALIDATION_RELEASE_JSON:-}" <<'PY'
 import json
 import sys
-print(json.dumps({
+payload = {
     "suite": sys.argv[1], "run_id": sys.argv[2],
     "provenance": {"mode": sys.argv[3], "ci_authoritative": sys.argv[4] == "true"},
     "verdict": sys.argv[5], "reason": sys.argv[6],
     "policies": {"unavailable": sys.argv[7], "threshold": sys.argv[8]},
     "command_exit_code": int(sys.argv[9]),
-}))
+}
+if sys.argv[10]:
+    payload["release"] = json.loads(sys.argv[10])
+print(json.dumps(payload))
 PY
 )"
     validation_result_write_atomic_text "${prom}" "# HELP chapar_validation_suite_verdict Suite verdict (PASS=0 WARN=1 FAIL=2 SKIP=3)\n# TYPE chapar_validation_suite_verdict gauge\nchapar_validation_suite_verdict{suite=\"${VALIDATION_SUITE}\",run_id=\"${VALIDATION_RUN_ID}\",verdict=\"${verdict}\"} ${verdict_code}\n"
-    validation_result_write_atomic_json "${manifest}" "$(python3 - "${VALIDATION_SUITE}" "${VALIDATION_RUN_ID}" "${VALIDATION_RUN_ISSUED_AT}" "${generated_at}" "${VALIDATION_RESULT_MODE}" "${VALIDATION_CI_AUTHORITATIVE}" "${verdict}" "${reason}" "${VALIDATION_UNAVAILABLE_POLICY}" "${VALIDATION_THRESHOLD_POLICY}" <<'PY'
+    validation_result_write_atomic_json "${manifest}" "$(python3 - "${VALIDATION_SUITE}" "${VALIDATION_RUN_ID}" "${VALIDATION_RUN_ISSUED_AT}" "${generated_at}" "${VALIDATION_RESULT_MODE}" "${VALIDATION_CI_AUTHORITATIVE}" "${verdict}" "${reason}" "${VALIDATION_UNAVAILABLE_POLICY}" "${VALIDATION_THRESHOLD_POLICY}" "${VALIDATION_RELEASE_JSON:-}" <<'PY'
 import json
 import sys
 payload = {
@@ -244,6 +280,8 @@ payload = {
 }
 if sys.argv[8]:
     payload["reason"] = sys.argv[8]
+if sys.argv[11]:
+    payload["release"] = json.loads(sys.argv[11])
 print(json.dumps(payload))
 PY
 )"

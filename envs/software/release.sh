@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tuple-bound Chapar release driver. Resolver output is the only path and policy
-# authority. Builds are staged, then atomically renamed into an immutable release.
+# Tuple-bound Chapar release driver. Identity (CHAPAR_SOFTWARE_SET,
+# CHAPAR_TARGET) and every path root come from the site settings via
+# etc/chapar-defaults.sh; target facts come from the committed registry.
+# Builds are staged, then atomically renamed into an immutable release.
 
 BUILD_STAGING_DIR=""
 BUILD_SCOPE_DIR=""
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
 # shellcheck source=../../etc/chapar-install-tree.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/etc/chapar-install-tree.sh"
+. "${REPO_ROOT}/etc/chapar-install-tree.sh"
 
 die() {
     printf 'ERROR: %s\n' "$*" >&2
@@ -18,40 +22,39 @@ die() {
 usage() {
     cat <<'EOF'
 Usage:
-  release.sh plan --selection <selection.json> --expected-selection-sha256 <sha256> [--operation build|promote|publish-modules|status|migrate-buildcache]
-  release.sh build --selection <selection.json> --selection-digest <sha256> [--promote]
-  release.sh promote --selection <selection.json> --expected-selection-sha256 <sha256>
-  release.sh publish-modules --selection <selection.json> --expected-selection-sha256 <sha256>
-  release.sh module-use --selection <selection.json> --expected-selection-sha256 <sha256>
-  release.sh status --selection <selection.json> --expected-selection-sha256 <sha256>
-  release.sh migrate-buildcache --selection <selection.json> --expected-selection-sha256 <sha256> --legacy-source <path>
+  release.sh plan            <release-id> [--set SET] [--target TARGET]
+  release.sh build           <release-id> [--set SET] [--target TARGET] [--promote]
+  release.sh promote         <release-id> [--set SET] [--target TARGET]
+  release.sh publish-modules <release-id> [--set SET] [--target TARGET]
+  release.sh module-use      <release-id> [--set SET] [--target TARGET]
+  release.sh status          <release-id> [--set SET] [--target TARGET]
+  release.sh migrate-buildcache <release-id> --legacy-source <path> [--set SET] [--target TARGET]
 
-The selection must be a resolver-produced selection.json beside its exact
-spack.yaml and target-policy.yaml. Ambient release/cache/module path overrides
-are rejected. Checkout locks are never an input.
+Identity and paths come from the site settings (etc/chapar-site.env via
+etc/chapar-defaults.sh); --set/--target override CHAPAR_SOFTWARE_SET and
+CHAPAR_TARGET for this invocation. CHAPAR_TARGET must be a key of
+containers/images/targets.json. Delivery policy:
+  publish-modules requires "modules" in CHAPAR_DELIVER
+  promote requires PUBLISH_CURRENT=true
+  buildcache publication requires PUBLISH_BUILDCACHE=true
+
+Layout under the site roots:
+  ${CHAPAR_RELEASE_ROOT}/<set>/<target>/<release-id>   immutable release
+  ${CHAPAR_RELEASE_ROOT}/<set>/<target>/current        promotion pointer
+  ${CHAPAR_MODULE_ROOT}/<set>/<target>/<release-id> and current published modules
+  ${CHAPAR_INSTALL_TREE_ROOT}                                   shared padded store
+  ${CHAPAR_BUILDCACHE_ROOT}/<target>, ${CHAPAR_CCACHE_ROOT}/<target>
 EOF
 }
 
-reject_ambient_authority() {
-    local name
-    for name in ENV_PATH HPCSIM_ROOT VLAD_ROOT CHAPAR_ENV_ROOT CHAPAR_INSTALL_TREE_ROOT \
-        CHAPAR_BUILDCACHE_ROOT CHAPAR_CCACHE_ROOT CHAPAR_MODULE_ROOT \
-        CHAPAR_TARGET_PROFILE PUBLISH_BUILDCACHE; do
-        if [ -n "${!name+x}" ]; then
-            printf 'ERROR: ambient authority is forbidden: %s\n' "${name}" >&2
-            printf '       etc/init.sh exports these for interactive use and sets them from a\n' >&2
-            printf '       selection. Run release.sh from a clean shell instead; it derives every\n' >&2
-            printf '       path from --selection and pins its own Spack scopes.\n' >&2
-            exit 1
-        fi
-    done
-}
-
-validate_sha256() {
+validate_identifier() {
     case "$1" in
-        ""|*[!0-9a-f]* ) return 1 ;;
+        ""|*[!a-z0-9._-]*) return 1 ;;
     esac
-    [ "${#1}" -eq 64 ]
+    case "$1" in
+        [a-z0-9]*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 cleanup_build() {
@@ -66,348 +69,40 @@ cleanup_build() {
     exit "${status}"
 }
 
-# Emits one unit-separator-delimited record after validating every byte and path.
-# No directory is created and no subprocess other than this read-only validator
-# is launched before it succeeds.
-selection_record() {
-    local selection="$1"
-    local expected="$2"
-    local operation="$3"
-    python3 - "${selection}" "${expected}" "${operation}" "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" <<'PY'
-import hashlib
-import json
-import os
-import re
-import stat
-import sys
-from pathlib import Path, PurePosixPath
-
-selection_path = Path(sys.argv[1])
-expected = sys.argv[2]
-operation = sys.argv[3]
-repository_root = Path(sys.argv[4])
-identifier = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
-digest_re = re.compile(r"^[0-9a-f]{64}$")
-
-def fail(message: str) -> None:
-    raise SystemExit(f"ERROR: {message}")
-
-def reject_symlink(path: Path, label: str) -> None:
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
-        trusted_tmp_alias = current == Path("/tmp") and current.resolve() == Path("/private/tmp")
-        if current.is_symlink() and not trusted_tmp_alias:
-            fail(f"{label} has symlink ambiguity: {current}")
-
-def read_regular(path: Path, label: str) -> bytes:
-    reject_symlink(path, label)
-    if len(path.parts) > 1 and path.parts[1] in {"tmp", "var"}:
-        alias = Path(path.anchor) / path.parts[1]
-        expected_alias = Path("/private") / path.parts[1]
-        if alias.is_symlink() and alias.resolve() == expected_alias:
-            path = expected_alias.joinpath(*path.parts[2:])
-    file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    directory_flags = file_flags | getattr(os, "O_DIRECTORY", 0)
-    directory = os.open(path.anchor, directory_flags)
-    try:
-        for component in path.parts[1:-1]:
-            child = os.open(component, directory_flags, dir_fd=directory)
-            os.close(directory)
-            directory = child
-        descriptor = os.open(path.name, file_flags, dir_fd=directory)
-        with os.fdopen(descriptor, "rb") as authority:
-            if not stat.S_ISREG(os.fstat(authority.fileno()).st_mode):
-                fail(f"{label} is not a regular file")
-            return authority.read()
-    except OSError as error:
-        fail(f"cannot open {label}: {error}")
-    finally:
-        os.close(directory)
-
-if not digest_re.fullmatch(expected):
-    fail("expected selection digest must be 64 lowercase hexadecimal characters")
-if not selection_path.is_absolute():
-    selection_path = Path.cwd() / selection_path
-reject_symlink(selection_path, "selection")
-if not selection_path.is_file():
-    fail("selection is not a regular file")
-raw = read_regular(selection_path, "selection")
-actual = hashlib.sha256(raw).hexdigest()
-if actual != expected:
-    fail("selection digest mismatch")
-try:
-    document = json.loads(raw)
-except (UnicodeDecodeError, json.JSONDecodeError) as error:
-    fail(f"invalid selection JSON: {error}")
-if not isinstance(document, dict):
-    fail("selection must be an object")
-if document.get("schema") != "https://nscaledev.github.io/chapar/schemas/software-selection/v1" or document.get("schema_version") != 1:
-    fail("unsupported selection schema")
-
-policy = document.get("policy")
-invocation = document.get("invocation")
-paths = document.get("paths")
-authorities = document.get("authorities")
-artifacts = document.get("artifacts")
-if not all(isinstance(item, dict) for item in (policy, invocation, paths, authorities, artifacts)):
-    fail("selection is missing typed policy, invocation, paths, authorities, or artifacts")
-
-dc = policy.get("datacenter")
-software_set = policy.get("software_set")
-target = policy.get("target")
-release_id = invocation.get("release_id")
-run_id = invocation.get("run_id")
-for label, value in (("datacenter", dc), ("software set", software_set), ("target", target), ("release ID", release_id), ("run ID", run_id)):
-    if not isinstance(value, str) or not identifier.fullmatch(value):
-        fail(f"invalid {label}")
-if software_set not in {"vlad", "hpcsim", "all"}:
-    fail("unknown software set")
-
-required_paths = {
-    "release_root", "release_final", "release_staging", "modulefiles",
-    "install_tree", "writable_buildcache", "ccache", "container_outputs",
-    "receipts", "evidence", "spack_build_stage", "image_staging",
-    "validation_work", "resolver_work",
-}
-if set(paths) != required_paths:
-    extra = sorted(set(paths) - required_paths)
-    if any("seed" in name for name in extra):
-        fail("seed mirrors are read-only and cannot be an autopush destination")
-    fail("selection path set is incomplete or contains unknown path authority")
-
-protected = PurePosixPath("/resources/chapar")
-def related(left: PurePosixPath, right: PurePosixPath) -> bool:
-    return left == right or left in right.parents or right in left.parents
-
-for name, value in paths.items():
-    if not isinstance(value, str) or any(ord(char) < 32 for char in value):
-        fail(f"invalid {name} path")
-    path = PurePosixPath(value)
-    if not path.is_absolute() or ".." in path.parts or path.as_posix() != value:
-        fail(f"ambiguous {name} path")
-    if related(path, protected):
-        fail(f"{name} overlaps protected legacy path")
-    reject_symlink(Path(value), name)
-
-namespace = PurePosixPath(dc, software_set, target)
-contract_path = repository_root / "datacenters" / dc / "targets" / target / "contract.json"
-contract_raw = read_regular(contract_path, "target contract")
-try:
-    contract = json.loads(contract_raw)
-except (UnicodeDecodeError, json.JSONDecodeError) as error:
-    fail(f"invalid target contract JSON: {error}")
-if not isinstance(contract, dict) or contract.get("datacenter_id") != dc or contract.get("target") != target:
-    fail("target contract identity mismatch")
-try:
-    durable = contract["paths"]["durable_writable"]
-    temporary = contract["paths"]["temporary"]
-    sharing = contract["sharing"]
-    publication = contract["publication"]
-except (KeyError, TypeError):
-    fail("target contract path or publication policy is incomplete")
-shared = [dc]
-if sharing.get("share_across_software_sets") is not True:
-    shared.append(software_set)
-if sharing.get("share_across_targets") is not True:
-    shared.append(target)
-shared_namespace = PurePosixPath(*shared)
-expected_paths = {
-    "release_root": str(PurePosixPath(durable["releases"]) / namespace),
-    "release_final": str(PurePosixPath(durable["releases"]) / namespace / release_id),
-    "release_staging": str(PurePosixPath(temporary["release_staging"]) / namespace / f"{release_id}.{run_id}"),
-    "modulefiles": str(PurePosixPath(durable["modulefiles"]) / namespace / release_id),
-    "install_tree": str(PurePosixPath(durable["install_tree"]) / shared_namespace),
-    "writable_buildcache": str(PurePosixPath(durable["writable_buildcache"]) / shared_namespace),
-    "ccache": str(PurePosixPath(durable["ccache"]) / shared_namespace),
-    "container_outputs": str(PurePosixPath(durable["container_outputs"]) / namespace / release_id),
-    "receipts": str(PurePosixPath(durable["receipts"]) / namespace / release_id),
-    "evidence": str(PurePosixPath(durable["evidence"]) / namespace / run_id),
-    "spack_build_stage": str(PurePosixPath(temporary["spack_build_stage"]) / namespace / run_id),
-    "image_staging": str(PurePosixPath(temporary["image_staging"]) / namespace / run_id),
-    "validation_work": str(PurePosixPath(temporary["validation_work"]) / namespace / run_id),
-    "resolver_work": str(PurePosixPath(temporary["resolver_work"]) / namespace / run_id),
-}
-if paths != expected_paths:
-    fail("selection paths do not match target contract derivation")
-# Mirrors tools/chapar_config/paths.py CONTAINER_PREFIX. A store prefix built here
-# is copied into a container image at its identical absolute path, so a contract
-# that selects a container must build inside the reserved /opt/chapar namespace.
-# Re-derived rather than trusted, because release.sh never treats the selection as
-# authoritative over the on-disk contract.
-container_prefix = PurePosixPath("/opt/chapar")
-if contract.get("container_selections"):
-    install_root = PurePosixPath(durable["install_tree"])
-    if container_prefix != install_root and container_prefix not in install_root.parents:
-        fail("a container-selecting contract must place install_tree under /opt/chapar")
-authority_paths = {
-    "software_catalog": repository_root / "envs/software/spack.yaml",
-    "target_registry": repository_root / "containers/images/targets.json",
-    "container_registry": repository_root / "containers/images/containers.json",
-    "datacenter_contract": contract_path.parents[2] / "datacenter.json",
-}
-expected_authorities = {name: hashlib.sha256(read_regular(path, name)).hexdigest() for name, path in authority_paths.items()}
-expected_authorities["target_contract"] = hashlib.sha256(contract_raw).hexdigest()
-if authorities != expected_authorities:
-    fail("selection authority digests do not match current authorities")
-for key in ("publish_buildcache", "publish_modules", "publish_containers", "promote_current"):
-    if type(publication.get(key)) is not bool:
-        fail("target contract publication policy is invalid")
-
-release_root = PurePosixPath(paths["release_root"])
-release_final = PurePosixPath(paths["release_final"])
-release_staging = PurePosixPath(paths["release_staging"])
-if release_final != release_root / release_id:
-    fail("release final does not match tuple and release identity")
-if tuple(release_root.parts[-3:]) != namespace.parts:
-    fail("release root does not match tuple identity")
-try:
-    marker = release_staging.parts.index(".staging")
-except ValueError:
-    fail("release staging is not under the declared adjacent .staging root")
-if PurePosixPath(*release_staging.parts[:marker]) != PurePosixPath(*release_root.parts[:-3]):
-    fail("release staging and final roots do not share the declared release filesystem")
-if tuple(release_staging.parts[marker + 1:-1]) != namespace.parts or release_staging.name != f"{release_id}.{run_id}":
-    fail("release staging does not match tuple, release, and run identity")
-
-suffixes = {
-    "modulefiles": (*namespace.parts, release_id),
-    "install_tree": namespace.parts,
-    "writable_buildcache": namespace.parts,
-    "ccache": namespace.parts,
-    "spack_build_stage": (*namespace.parts, run_id),
-}
-for name, suffix in suffixes.items():
-    if tuple(PurePosixPath(paths[name]).parts[-len(suffix):]) != tuple(suffix):
-        fail(f"{name} does not match tuple identity")
-
-required_authorities = {"software_catalog", "target_registry", "container_registry", "datacenter_contract", "target_contract"}
-if set(authorities) != required_authorities or any(not isinstance(value, str) or not digest_re.fullmatch(value) for value in authorities.values()):
-    fail("authority digests are incomplete or invalid")
-manifest_digest = artifacts.get("effective_manifest_sha256")
-policy_digest = artifacts.get("target_policy_sha256")
-if not isinstance(manifest_digest, str) or not digest_re.fullmatch(manifest_digest):
-    fail("effective manifest digest is invalid")
-if not isinstance(policy_digest, str) or not digest_re.fullmatch(policy_digest):
-    fail("target policy digest is invalid")
-
-artifact_dir = selection_path.parent
-manifest = artifact_dir / "spack.yaml"
-target_policy = artifact_dir / "target-policy.yaml"
-for artifact, digest, label in ((manifest, manifest_digest, "effective manifest"), (target_policy, policy_digest, "target policy")):
-    reject_symlink(artifact, label)
-    if not artifact.is_file() or hashlib.sha256(artifact.read_bytes()).hexdigest() != digest:
-        fail(f"{label} digest mismatch")
-
-final = Path(paths["release_final"])
-if operation == "build" and (final.exists() or final.is_symlink()):
-    fail("duplicate release ID: immutable release already exists")
-if operation == "build":
-    for name in ("release_staging", "spack_build_stage"):
-        candidate = Path(paths[name])
-        if candidate.exists() or candidate.is_symlink():
-            fail(f"stale {name} path already exists")
-if operation in {"promote", "publish-modules", "module-use"}:
-    lock = final / "spack.lock"
-    metadata = final / "metadata.json"
-    reject_symlink(final, "release")
-    reject_symlink(lock, "release-local lock")
-    if not final.is_dir() or not lock.is_file():
-        fail("promotion requires an immutable release-local spack.lock")
-    if not metadata.is_file():
-        fail("release metadata is missing")
-    try:
-        saved = json.loads(metadata.read_bytes())
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        fail(f"release metadata is stale or partial: {error}")
-    metadata_keys = {"schema", "schema_version", "identity", "roots", "digests", "policy"}
-    identity_keys = {"datacenter", "software_set", "target", "release_id", "run_id"}
-    root_keys = {"release_root", "release_final", "release_staging", "modulefiles", "install_tree", "writable_buildcache", "ccache", "spack_build_stage"}
-    digest_keys = {
-        "selection_sha256", "effective_manifest_sha256", "target_policy_sha256",
-        "software_catalog_sha256", "target_registry_sha256", "container_registry_sha256",
-        "datacenter_contract_sha256", "target_contract_sha256", "release_local_lock_sha256",
-    }
-    policy_keys = {"publish_buildcache", "buildcache_signed", "buildcache_autopush"}
-    if not isinstance(saved, dict) or set(saved) != metadata_keys:
-        fail("release metadata has missing or unknown top-level fields")
-    if saved.get("schema") != "https://nscaledev.github.io/chapar/schemas/release-metadata/v1" or type(saved.get("schema_version")) is not int or saved.get("schema_version") != 1:
-        fail("unsupported release metadata schema or version")
-    nested = (("identity", identity_keys, str), ("roots", root_keys, str), ("digests", digest_keys, str), ("policy", policy_keys, bool))
-    for name, keys, value_type in nested:
-        value = saved.get(name)
-        if not isinstance(value, dict) or set(value) != keys:
-            fail(f"release metadata {name} has missing or unknown fields")
-        if any(type(item) is not value_type for item in value.values()):
-            fail(f"release metadata {name} has invalid field types")
-    if any(digest_re.fullmatch(value) is None for value in saved["digests"].values()):
-        fail("release metadata contains an invalid digest")
-    saved_identity = saved.get("identity", {})
-    expected_identity = {"datacenter": dc, "software_set": software_set, "target": target, "release_id": release_id, "run_id": run_id}
-    if saved_identity != expected_identity:
-        fail("release metadata identity mismatch")
-    expected_roots = {key: paths[key] for key in ("release_root", "release_final", "release_staging", "modulefiles", "install_tree", "writable_buildcache", "ccache", "spack_build_stage")}
-    if saved.get("roots") != expected_roots:
-        fail("release metadata roots mismatch")
-    expected_policy = {"publish_buildcache": publication["publish_buildcache"], "buildcache_signed": False, "buildcache_autopush": publication["publish_buildcache"]}
-    if saved.get("policy") != expected_policy:
-        fail("release metadata publication policy mismatch")
-    saved_digests = saved.get("digests", {})
-    release_files = {
-        "selection_sha256": final / "selection.json",
-        "effective_manifest_sha256": final / "spack.yaml",
-        "target_policy_sha256": final / "target-policy.yaml",
-        "release_local_lock_sha256": lock,
-    }
-    if any(not path.is_file() or saved_digests.get(name) != hashlib.sha256(path.read_bytes()).hexdigest() for name, path in release_files.items()):
-        fail("release metadata digest mismatch")
-    expected_digests = {
-        "selection_sha256": actual,
-        "effective_manifest_sha256": manifest_digest,
-        "target_policy_sha256": policy_digest,
-        "software_catalog_sha256": authorities["software_catalog"],
-        "target_registry_sha256": authorities["target_registry"],
-        "container_registry_sha256": authorities["container_registry"],
-        "datacenter_contract_sha256": authorities["datacenter_contract"],
-        "target_contract_sha256": authorities["target_contract"],
-        "release_local_lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
-    }
-    if saved_digests != expected_digests:
-        fail("release metadata authority binding mismatch")
-
-values = [
-    dc, software_set, target, release_id, run_id, actual,
-    paths["release_root"], paths["release_final"], paths["release_staging"],
-    paths["modulefiles"], paths["install_tree"], paths["writable_buildcache"],
-    paths["ccache"], paths["spack_build_stage"], str(selection_path),
-    str(manifest), str(target_policy), manifest_digest, policy_digest,
-    authorities["software_catalog"], authorities["target_registry"],
-    authorities["container_registry"], authorities["datacenter_contract"],
-    authorities["target_contract"],
-    str(publication["publish_buildcache"]).lower(), str(publication["publish_modules"]).lower(),
-    str(publication["publish_containers"]).lower(), str(publication["promote_current"]).lower(),
-]
-print("\x1f".join(values))
-PY
+# The chapar package is used stdlib-only from the checkout: builders need
+# python3 but neither uv nor an installed wheel.
+chapar_cli() {
+    PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" python3 -m chapar "$@"
 }
 
-load_selection() {
-    local record
-    record="$(selection_record "${SELECTION_FILE}" "${EXPECTED_SELECTION_SHA256}" "${OPERATION}")" || exit $?
-    IFS=$'\037' read -r DATACENTER SOFTWARE_SET TARGET RELEASE_ID RUN_ID SELECTION_SHA256 \
-        RELEASE_ROOT RELEASE_FINAL RELEASE_STAGING MODULEFILES INSTALL_TREE WRITABLE_BUILDCACHE \
-        CCACHE SPACK_BUILD_STAGE SELECTION_FILE EFFECTIVE_MANIFEST TARGET_POLICY \
-        EFFECTIVE_MANIFEST_SHA256 TARGET_POLICY_SHA256 SOFTWARE_CATALOG_SHA256 \
-        TARGET_REGISTRY_SHA256 CONTAINER_REGISTRY_SHA256 DATACENTER_CONTRACT_SHA256 \
-        TARGET_CONTRACT_SHA256 PUBLISH_BUILDCACHE PUBLISH_MODULES PUBLISH_CONTAINERS \
-        PROMOTE_CURRENT <<<"${record}"
+# Derive every path for the current tuple. Requires chapar_apply_defaults to
+# have run (identity exported and validated) and CHAPAR_TARGET registered.
+derive_paths() {
+    [ -n "${CHAPAR_TARGET}" ] || die "CHAPAR_TARGET is required: set it in the site settings or pass --target"
+    chapar_cli target scope --target "${CHAPAR_TARGET}" >/dev/null || exit $?
+    TUPLE="${CHAPAR_SOFTWARE_SET}/${CHAPAR_TARGET}"
+    RELEASE_ROOT="${CHAPAR_RELEASE_ROOT}/${TUPLE}"
+    RELEASE_FINAL="${RELEASE_ROOT}/${RELEASE_ID}"
+    RELEASE_STAGING="${RELEASE_ROOT}/.staging/${RELEASE_ID}.${RUN_ID}"
+    MODULEFILES="${CHAPAR_MODULE_ROOT}/${TUPLE}/${RELEASE_ID}"
+    INSTALL_TREE="${CHAPAR_INSTALL_TREE_ROOT}"
+    WRITABLE_BUILDCACHE="${CHAPAR_BUILDCACHE_ROOT}/${CHAPAR_TARGET}"
+    CCACHE="${CHAPAR_CCACHE_ROOT}/${CHAPAR_TARGET}"
+    SPACK_BUILD_STAGE="${CHAPAR_BUILD_STAGE_ROOT}/${TUPLE}/${RELEASE_ID}.${RUN_ID}"
+}
+
+deliver_enabled() {
+    case " ${CHAPAR_DELIVER} " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 print_plan() {
     cat <<EOF
 operation: ${OPERATION}
-identity: ${DATACENTER}/${SOFTWARE_SET}/${TARGET}/${RELEASE_ID}/${RUN_ID}
-selection_sha256: ${SELECTION_SHA256}
+identity: ${CHAPAR_SOFTWARE_SET}/${CHAPAR_TARGET}/${RELEASE_ID}/${RUN_ID}
+site_config: ${CHAPAR_SITE_CONFIG:-${CHAPAR_ROOT}/etc/chapar-site.env}
 release_root: ${RELEASE_ROOT}
 release_staging: ${RELEASE_STAGING}
 release_final: ${RELEASE_FINAL}
@@ -417,6 +112,9 @@ writable_buildcache: ${WRITABLE_BUILDCACHE}
 ccache: ${CCACHE}
 spack_build_stage: ${SPACK_BUILD_STAGE}
 spack_environment: ${RELEASE_STAGING}
+catalog: ${REPO_ROOT}/envs/software/spack.yaml
+target_registry: ${REPO_ROOT}/containers/images/targets.json
+target_scope: rendered per target by 'chapar target scope --target ${CHAPAR_TARGET}'
 bootstrap_specs: ccache
 bootstrap_compiler: os external gcc, resolved from the system scope at build time
 staged_roots: ${STAGED_ROOTS[*]}
@@ -424,18 +122,11 @@ ccache_dir: ${CCACHE}
 staged_manifest: ${RELEASE_STAGING}/spack.yaml
 release_local_lock: ${RELEASE_FINAL}/spack.lock
 metadata: ${RELEASE_FINAL}/metadata.json
-effective_manifest_sha256: ${EFFECTIVE_MANIFEST_SHA256}
-target_policy_sha256: ${TARGET_POLICY_SHA256}
-software_catalog_sha256: ${SOFTWARE_CATALOG_SHA256}
-target_registry_sha256: ${TARGET_REGISTRY_SHA256}
-container_registry_sha256: ${CONTAINER_REGISTRY_SHA256}
-datacenter_contract_sha256: ${DATACENTER_CONTRACT_SHA256}
-target_contract_sha256: ${TARGET_CONTRACT_SHA256}
-checkout_lock: forbidden
+module_systems: ${CHAPAR_MODULE_SYSTEMS}
+deliver: ${CHAPAR_DELIVER}
+seed_mirrors: ${CHAPAR_SEED_MIRRORS:-none}
 publish_buildcache: ${PUBLISH_BUILDCACHE}
-publish_modules: ${PUBLISH_MODULES}
-publish_containers: ${PUBLISH_CONTAINERS}
-promote_current: ${PROMOTE_CURRENT}
+publish_current: ${PUBLISH_CURRENT}
 buildcache_signed: false
 buildcache_autopush: ${PUBLISH_BUILDCACHE}
 EOF
@@ -450,7 +141,7 @@ EOF
 make_scope() {
     local module_root="$1"
     local ccache_enabled="$2"
-    local effective_padded_length
+    local effective_padded_length seed index=0
     BUILD_SCOPE_DIR="${SPACK_BUILD_STAGE}/command-line-scope"
     mkdir -p "${BUILD_SCOPE_DIR}"
     effective_padded_length="$(install_tree_padded_length "${INSTALL_TREE}")"
@@ -465,36 +156,52 @@ config:
   - ${SPACK_BUILD_STAGE}/stage
   ccache: ${ccache_enabled}
 EOF
-    cat >"${BUILD_SCOPE_DIR}/mirrors.yaml" <<EOF
-mirrors:
+    printf 'mirrors:\n' >"${BUILD_SCOPE_DIR}/mirrors.yaml"
+    for seed in ${CHAPAR_SEED_MIRRORS}; do
+        index=$((index + 1))
+        cat >>"${BUILD_SCOPE_DIR}/mirrors.yaml" <<EOF
+  chapar-seed-$(printf '%03d' "${index}"):
+    url: file://${seed}
+    source: false
+    binary: true
+    signed: false
+    autopush: false
+EOF
+    done
+    cat >>"${BUILD_SCOPE_DIR}/mirrors.yaml" <<EOF
   chapar-buildcache:
     url: file://${WRITABLE_BUILDCACHE}
     source: false
     binary: true
     signed: false
-    autopush: true
+    autopush: ${PUBLISH_BUILDCACHE}
 EOF
-    cat >"${BUILD_SCOPE_DIR}/modules.yaml" <<EOF
-modules:
-  default:
-    roots:
-      tcl: ${module_root}/modulefiles
-      lmod: ${module_root}/lmod
-    enable: [tcl]
-    tcl:
-      exclude_implicits: true
-      hash_length: 0
-      all:
-        autoload: none
-EOF
+    {
+        printf 'modules:\n  default:\n    roots:\n'
+        printf '      tcl: %s/modulefiles\n' "${module_root}"
+        printf '      lmod: %s/lmod\n' "${module_root}"
+        printf '    enable: [%s]\n' "$(printf '%s' "${CHAPAR_MODULE_SYSTEMS}" | tr ' ' ',')"
+        printf '    tcl:\n      exclude_implicits: true\n      hash_length: 0\n      all:\n        autoload: none\n'
+        if deliver_module_system lmod; then
+            printf '    lmod:\n      exclude_implicits: true\n      hash_length: 0\n      all:\n        autoload: none\n'
+        fi
+    } >"${BUILD_SCOPE_DIR}/modules.yaml"
+    # Target facts as package requirements: binds transitive instances (gdrcopy
+    # under ucx) that root-spec decoration cannot reach.
+    chapar_cli target scope --target "${CHAPAR_TARGET}" --output "${BUILD_SCOPE_DIR}"
+}
+
+deliver_module_system() {
+    case " ${CHAPAR_MODULE_SYSTEMS} " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # The bootstrap compiler is whatever the OS scope declares as its external gcc.
-# Reading it from config keeps this OS-independent: the retired helper hardcoded
-# `case "${OS_NAME}" in ubuntu24.04)` around its prerequisite installs.
-# Run through `spack python` rather than the system interpreter: it resolves
-# scope precedence with Spack's own config API and needs no PyYAML on the
-# builder, which release.sh has otherwise never required.
+# Reading it from config keeps this OS-independent. Run through `spack python`
+# rather than the system interpreter: it resolves scope precedence with Spack's
+# own config API and needs no PyYAML on the builder.
 bootstrap_compiler() {
     spack -C "${BUILD_SCOPE_DIR}" python -c '
 import spack.config
@@ -536,9 +243,7 @@ bootstrap_ccache() {
 
 # Roots to install before the rest of the environment, in order. Names only: the
 # specs come from the concretized lock, so gcc@15's +profiled variant and any
-# other catalog policy applies without being restated here. The retired helper
-# also preinstalled llvm because it provided the C/CXX virtuals; the catalog now
-# requires gcc@15 for those, and llvm is not a root, so it is not staged.
+# other catalog policy applies without being restated here.
 STAGED_ROOTS=(gcc)
 
 staged_root_hash() {
@@ -581,7 +286,7 @@ PY
 }
 
 refresh_root_modules() {
-    local hashes_file names_file duplicate_file root_hash module_name
+    local hashes_file names_file duplicate_file root_hash module_name system
     hashes_file="${BUILD_SCOPE_DIR}/root-hashes.txt"
     names_file="${BUILD_SCOPE_DIR}/root-module-names.txt"
     duplicate_file="${BUILD_SCOPE_DIR}/duplicate-root-module-names.txt"
@@ -592,73 +297,113 @@ refresh_root_modules() {
         module_name="$(spack -e "${RELEASE_STAGING}" -C "${BUILD_SCOPE_DIR}" find --no-groups --format '{name}/{version}' "${root_hash}")"
         printf '%s\n' "${module_name}" >>"${names_file}"
     done <"${hashes_file}"
+    # Hashless names must be unique; the check is module-system independent.
     sort "${names_file}" | uniq -d >"${duplicate_file}"
     [ ! -s "${duplicate_file}" ] || die "duplicate hashless root module name"
-    # shellcheck disable=SC2046
-    spack -e "${RELEASE_STAGING}" -C "${BUILD_SCOPE_DIR}" module tcl refresh -y $(cat "${hashes_file}")
+    for system in ${CHAPAR_MODULE_SYSTEMS}; do
+        # shellcheck disable=SC2046
+        spack -e "${RELEASE_STAGING}" -C "${BUILD_SCOPE_DIR}" module "${system}" refresh -y $(cat "${hashes_file}")
+    done
 }
 
+# Release metadata v2: identity, verbatim target facts, release-local digests,
+# and delivery policy. This file plus spack.lock is the release's complete
+# self-description; containers, validation, and CVE consumers read it instead
+# of re-deriving anything from ambient state.
 write_metadata() {
-    python3 - "${RELEASE_STAGING}" "${DATACENTER}" "${SOFTWARE_SET}" "${TARGET}" \
-        "${RELEASE_ID}" "${RUN_ID}" "${SELECTION_SHA256}" "${EFFECTIVE_MANIFEST_SHA256}" \
-        "${SOFTWARE_CATALOG_SHA256}" "${TARGET_REGISTRY_SHA256}" "${CONTAINER_REGISTRY_SHA256}" \
-        "${DATACENTER_CONTRACT_SHA256}" "${TARGET_CONTRACT_SHA256}" "${RELEASE_ROOT}" \
-        "${RELEASE_FINAL}" "${RELEASE_STAGING}" "${MODULEFILES}" "${INSTALL_TREE}" \
-        "${WRITABLE_BUILDCACHE}" "${CCACHE}" "${SPACK_BUILD_STAGE}" \
-        "${PUBLISH_BUILDCACHE}" <<'PY'
+    python3 - "${RELEASE_STAGING}" "${REPO_ROOT}/containers/images/targets.json" \
+        "${CHAPAR_SOFTWARE_SET}" "${CHAPAR_TARGET}" "${RELEASE_ID}" "${RUN_ID}" \
+        "${RELEASE_ROOT}" "${RELEASE_FINAL}" "${RELEASE_STAGING}" "${MODULEFILES}" \
+        "${INSTALL_TREE}" "${WRITABLE_BUILDCACHE}" "${CCACHE}" "${SPACK_BUILD_STAGE}" \
+        "${PUBLISH_BUILDCACHE}" "${CHAPAR_DELIVER}" "${CHAPAR_MODULE_SYSTEMS}" \
+        "${BUILD_SCOPE_DIR}/packages.yaml" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
-s = Path(sys.argv[1])
-lock_digest = hashlib.sha256((s / "spack.lock").read_bytes()).hexdigest()
-doc = {
-    "schema": "https://nscaledev.github.io/chapar/schemas/release-metadata/v1",
-    "schema_version": 1,
-    "identity": dict(zip(("datacenter", "software_set", "target", "release_id", "run_id"), sys.argv[2:7])),
-    "roots": dict(zip(("release_root", "release_final", "release_staging", "modulefiles", "install_tree", "writable_buildcache", "ccache", "spack_build_stage"), sys.argv[14:22])),
-    "digests": {
-        "selection_sha256": sys.argv[7], "effective_manifest_sha256": sys.argv[8],
-        "target_policy_sha256": hashlib.sha256((s / "target-policy.yaml").read_bytes()).hexdigest(),
-        "software_catalog_sha256": sys.argv[9], "target_registry_sha256": sys.argv[10],
-        "container_registry_sha256": sys.argv[11], "datacenter_contract_sha256": sys.argv[12],
-        "target_contract_sha256": sys.argv[13], "release_local_lock_sha256": lock_digest,
+
+staging = Path(sys.argv[1])
+registry_path = Path(sys.argv[2])
+software_set, target, release_id, run_id = sys.argv[3:7]
+
+registry_bytes = registry_path.read_bytes()
+targets = json.loads(registry_bytes).get("targets", {})
+facts = targets.get(target)
+if facts is None:
+    raise SystemExit(f"ERROR: target vanished from the registry: {target}")
+
+document = {
+    "schema": "https://nscaledev.github.io/chapar/schemas/release-metadata/v2",
+    "schema_version": 2,
+    "identity": {
+        "software_set": software_set,
+        "target": target,
+        "release_id": release_id,
+        "run_id": run_id,
     },
-    "policy": {"publish_buildcache": sys.argv[22] == "true", "buildcache_signed": False, "buildcache_autopush": sys.argv[22] == "true"},
+    "target_facts": facts,
+    "roots": dict(
+        zip(
+            (
+                "release_root", "release_final", "release_staging", "modulefiles",
+                "install_tree", "writable_buildcache", "ccache", "spack_build_stage",
+            ),
+            sys.argv[7:15],
+        )
+    ),
+    "digests": {
+        "software_catalog_sha256": hashlib.sha256((staging / "spack.yaml").read_bytes()).hexdigest(),
+        "target_registry_sha256": hashlib.sha256(registry_bytes).hexdigest(),
+        "target_scope_sha256": hashlib.sha256((staging / "target-scope.yaml").read_bytes()).hexdigest(),
+        "release_local_lock_sha256": hashlib.sha256((staging / "spack.lock").read_bytes()).hexdigest(),
+    },
+    "policy": {
+        "publish_buildcache": sys.argv[15] == "true",
+        "buildcache_signed": False,
+        "buildcache_autopush": sys.argv[15] == "true",
+        "deliver": sys.argv[16].split(),
+        "module_systems": sys.argv[17].split(),
+    },
 }
-(s / "metadata.json").write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
+(staging / "metadata.json").write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
 PY
 }
 
-# A release build supplies its own Spack scopes. etc/system carries the OS
-# externals (bootstrap compiler, libc) that the build cannot proceed without,
-# and etc/init.sh -- the only other thing that sets them -- exports
-# CHAPAR_INSTALL_TREE_ROOT, which reject_ambient_authority refuses. Pinning them
-# here also stops a build inheriting the operator's ~/.spack.
+# A release build pins its own Spack scopes so nothing leaks in from ~/.spack
+# or /etc/spack. etc/system carries the OS externals (bootstrap compiler,
+# libc); etc/user carries the $CHAPAR_* interpolations the site settings
+# export, so the same user scope serves interactive shells and builds.
 pin_spack_scopes() {
-    local repository
-    repository="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-    [ -d "${repository}/etc/system" ] || die "checkout has no etc/system scope: ${repository}"
-    export SPACK_SYSTEM_CONFIG_PATH="${repository}/etc/system"
-    export SPACK_USER_CONFIG_PATH="${SPACK_BUILD_STAGE}/spack-user-config"
+    [ -d "${REPO_ROOT}/etc/system" ] || die "checkout has no etc/system scope: ${REPO_ROOT}"
+    export SPACK_SYSTEM_CONFIG_PATH="${REPO_ROOT}/etc/system"
+    export SPACK_USER_CONFIG_PATH="${REPO_ROOT}/etc/user"
     export SPACK_USER_CACHE_PATH="${SPACK_BUILD_STAGE}/spack-user-cache"
-    mkdir -p "${SPACK_USER_CONFIG_PATH}" "${SPACK_USER_CACHE_PATH}"
+    mkdir -p "${SPACK_USER_CACHE_PATH}"
 }
 
-# The contract's ccache class is only real if the compiler wrapper writes there;
-# `config:ccache: true` alone would silently use the ambient cache. The umask and
-# compilercheck settings matter because the cache is shared across users and
-# across rebuilds of an identical compiler, where mtime checks would all miss.
+# The site ccache class is only real if the compiler wrapper writes there;
+# `config:ccache: true` alone would silently use the ambient cache. The umask
+# and compilercheck settings matter because the cache is shared across users
+# and across rebuilds of an identical compiler, where mtime checks would miss.
 configure_ccache() {
     export CCACHE_DIR="${CCACHE}"
     export CCACHE_TEMPDIR="${SPACK_BUILD_STAGE}/ccache-tmp"
     export CCACHE_BASEDIR="${SPACK_BUILD_STAGE}"
     export CCACHE_UMASK="${CCACHE_UMASK:-002}"
-    export CCACHE_COMPILERCHECK="${CCACHE_COMPILERCHECK:-content}"
+    export CCACHE_COMPILERCHECK="${CCACHE_COMPILERCHECK:-${CHAPAR_CCACHE_COMPILERCHECK}}"
+    if [ -n "${CHAPAR_CCACHE_MAXSIZE}" ]; then
+        export CCACHE_MAXSIZE="${CHAPAR_CCACHE_MAXSIZE}"
+    fi
     mkdir -p "${CCACHE_DIR}" "${CCACHE_TEMPDIR}"
 }
 
 cmd_build() {
+    if [ -e "${RELEASE_FINAL}" ] || [ -L "${RELEASE_FINAL}" ]; then
+        die "duplicate release ID: immutable release already exists: ${RELEASE_FINAL}"
+    fi
+    if [ -e "${RELEASE_STAGING}" ] || [ -L "${RELEASE_STAGING}" ]; then
+        die "stale release staging already exists: ${RELEASE_STAGING}"
+    fi
     command -v spack >/dev/null 2>&1 || die "required command 'spack' not found"
     mkdir -p "$(dirname "${RELEASE_STAGING}")" "$(dirname "${RELEASE_FINAL}")" \
         "${INSTALL_TREE}" "${WRITABLE_BUILDCACHE}" "${CCACHE}" "${SPACK_BUILD_STAGE}"
@@ -667,9 +412,9 @@ cmd_build() {
     trap cleanup_build EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    cp "${SELECTION_FILE}" "${RELEASE_STAGING}/selection.json"
-    cp "${EFFECTIVE_MANIFEST}" "${RELEASE_STAGING}/spack.yaml"
-    cp "${TARGET_POLICY}" "${RELEASE_STAGING}/target-policy.yaml"
+    # Copy the catalog first: the staged manifest is what this release builds,
+    # even if the checkout changes mid-build.
+    cp "${REPO_ROOT}/envs/software/spack.yaml" "${RELEASE_STAGING}/spack.yaml"
     pin_spack_scopes
     configure_ccache
     # Pass 1: ccache disabled, because ccache is not on PATH yet.
@@ -677,6 +422,7 @@ cmd_build() {
     bootstrap_ccache
     # Pass 2: same scope, ccache now resolvable, for every remaining install.
     make_scope "${RELEASE_STAGING}" true
+    cp "${BUILD_SCOPE_DIR}/packages.yaml" "${RELEASE_STAGING}/target-scope.yaml"
     spack -e "${RELEASE_STAGING}" -C "${BUILD_SCOPE_DIR}" concretize -f
     install_staged_roots
     spack -e "${RELEASE_STAGING}" -C "${BUILD_SCOPE_DIR}" install --only-concrete
@@ -737,13 +483,20 @@ release_module_arch() {
     printf '%s\n' "${arch_dir}"
 }
 
+require_release() {
+    [ -d "${RELEASE_FINAL}" ] || die "release does not exist: ${RELEASE_FINAL}"
+    [ -f "${RELEASE_FINAL}/spack.lock" ] || die "release has no release-local spack.lock"
+    [ -f "${RELEASE_FINAL}/metadata.json" ] || die "release has no metadata.json"
+}
+
 cmd_promote() {
     local module_parent
+    require_release
     atomic_link "${RELEASE_ID}" "${RELEASE_ROOT}/current"
     printf 'current: %s/current -> %s\n' "${RELEASE_ROOT}" "${RELEASE_ID}"
     # The modulefiles pointer resolves through <ns>/<release_id>, which only
     # publish-modules creates. Linking it unconditionally would leave a dangling
-    # `current` on a contract that forbids module publication.
+    # `current` where module delivery is not enabled.
     if [ -e "${MODULEFILES}" ] || [ -L "${MODULEFILES}" ]; then
         module_parent="$(dirname "${MODULEFILES}")"
         atomic_link "${RELEASE_ID}" "${module_parent}/current"
@@ -755,6 +508,7 @@ cmd_promote() {
 
 cmd_publish_modules() {
     local module_parent arch_dir
+    require_release
     module_parent="$(dirname "${MODULEFILES}")"
     arch_dir="$(release_module_arch)"
     mkdir -p "${module_parent}"
@@ -763,31 +517,38 @@ cmd_publish_modules() {
 }
 
 parse_common() {
-    SELECTION_FILE=""
-    EXPECTED_SELECTION_SHA256=""
-    OPERATION="${1}"
+    OPERATION="$1"
     shift
+    RELEASE_ID=""
     PROMOTE_AFTER_BUILD=false
     LEGACY_SOURCE=""
+    local set_override="" target_override=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --selection) [ "$#" -ge 2 ] || die "--selection requires a value"; SELECTION_FILE="$2"; shift 2 ;;
-            --selection-digest|--expected-selection-sha256) [ "$#" -ge 2 ] || die "$1 requires a value"; EXPECTED_SELECTION_SHA256="$2"; shift 2 ;;
-            --operation) [ "$#" -ge 2 ] || die "--operation requires a value"; OPERATION="$2"; shift 2 ;;
+            --set) [ "$#" -ge 2 ] || die "--set requires a value"; set_override="$2"; shift 2 ;;
+            --target) [ "$#" -ge 2 ] || die "--target requires a value"; target_override="$2"; shift 2 ;;
+            --release-id) [ "$#" -ge 2 ] || die "--release-id requires a value"; RELEASE_ID="$2"; shift 2 ;;
             --promote) PROMOTE_AFTER_BUILD=true; shift ;;
             --legacy-source) [ "$#" -ge 2 ] || die "--legacy-source requires a value"; LEGACY_SOURCE="$2"; shift 2 ;;
-            --lock) die "checkout lock inputs are forbidden" ;;
-            *) die "unknown argument: $1" ;;
+            --selection|--selection-digest|--expected-selection-sha256)
+                die "selections were retired: identity comes from the site settings (see etc/chapar-site.env.example)" ;;
+            -*) die "unknown argument: $1" ;;
+            *)
+                [ -z "${RELEASE_ID}" ] || die "unexpected argument: $1"
+                RELEASE_ID="$1"; shift ;;
         esac
     done
-    [ -n "${SELECTION_FILE}" ] || die "--selection is required"
-    [ -n "${EXPECTED_SELECTION_SHA256}" ] || die "--selection-digest is required"
-    validate_sha256 "${EXPECTED_SELECTION_SHA256}" || die "invalid expected selection digest"
-    case "${OPERATION}" in build|promote|publish-modules|module-use|status|migrate-buildcache) ;;
-        *) die "unknown operation: ${OPERATION}" ;;
-    esac
-    reject_ambient_authority
-    load_selection
+    [ -n "${RELEASE_ID}" ] || die "release ID is required"
+    validate_identifier "${RELEASE_ID}" || die "invalid release ID: ${RELEASE_ID}"
+    # Export identity overrides before the defaults run so the site policy
+    # function sees the final tuple.
+    [ -z "${set_override}" ] || export CHAPAR_SOFTWARE_SET="${set_override}"
+    [ -z "${target_override}" ] || export CHAPAR_TARGET="${target_override}"
+    # shellcheck source=../../etc/chapar-defaults.sh
+    . "${REPO_ROOT}/etc/chapar-defaults.sh" || exit 1
+    RUN_ID="${CHAPAR_RUN_ID:-$(date +%Y%m%d-%H%M%S).$$}"
+    validate_identifier "${RUN_ID}" || die "invalid run ID: ${RUN_ID}"
+    derive_paths
 }
 
 main() {
@@ -796,31 +557,41 @@ main() {
         -h|--help|help|"") usage; return 0 ;;
     esac
     shift
-    if [ "${command}" = plan ]; then
-        parse_common build "$@"
-        print_plan
-        return 0
-    fi
-    parse_common "${command}" "$@"
+    case "${command}" in
+        plan|status)
+            OPERATION="${command}"
+            parse_common build "$@"
+            OPERATION="${command}"
+            print_plan
+            return 0
+            ;;
+        build|promote|publish-modules|module-use|migrate-buildcache) parse_common "${command}" "$@" ;;
+        *) die "unknown command: ${command}" ;;
+    esac
     case "${command}" in
         build)
             cmd_build
             if [ "${PROMOTE_AFTER_BUILD}" = true ]; then
-                [ "${PROMOTE_CURRENT}" = true ] || die "target contract forbids promotion"
-                OPERATION=promote
-                load_selection
+                [ "${PUBLISH_CURRENT}" = true ] || die "site settings forbid promotion: PUBLISH_CURRENT is not true"
                 # Promotion repoints <ns>/current at the release ID under the
                 # modulefiles root; without publication that name does not exist.
-                [ "${PUBLISH_MODULES}" = false ] || cmd_publish_modules
+                if deliver_enabled modules; then
+                    cmd_publish_modules
+                fi
                 cmd_promote
             fi
             ;;
-        promote) [ "${PROMOTE_CURRENT}" = true ] || die "target contract forbids promotion"; cmd_promote ;;
-        publish-modules) [ "${PUBLISH_MODULES}" = true ] || die "target contract forbids module publication"; cmd_publish_modules ;;
+        promote)
+            [ "${PUBLISH_CURRENT}" = true ] || die "site settings forbid promotion: PUBLISH_CURRENT is not true"
+            cmd_promote
+            ;;
+        publish-modules)
+            deliver_enabled modules || die "delivery policy for ${CHAPAR_SOFTWARE_SET}/${CHAPAR_TARGET} does not include modules (CHAPAR_DELIVER=${CHAPAR_DELIVER})"
+            cmd_publish_modules
+            ;;
         # Assign first: a failing command substitution inside printf's argument
         # list would print an empty path and still exit 0.
         module-use) module_arch="$(release_module_arch)"; printf 'module use %s\n' "${module_arch}" ;;
-        status) print_plan ;;
         migrate-buildcache)
             [ -n "${LEGACY_SOURCE}" ] || die "explicit --legacy-source is required"
             [ -d "${LEGACY_SOURCE}" ] || die "legacy source is not a directory"

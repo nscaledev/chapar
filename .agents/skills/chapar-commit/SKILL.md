@@ -6,9 +6,8 @@ description: Prepare Chapar commits, pushes, or PR branches with human-only attr
 # Chapar commit workflow
 
 Before staging, inspect status, unstaged/staged diffs, worktrees, recent log,
-protected lock hashes, source-lock status, and workflow absence. Separate
-catalog/contracts, release/CI, image custody, validation/CVE, and docs/skills by
-review context.
+source-lock status, and workflow absence. Separate catalog/scopes, release/CI,
+image custody, validation/CVE, and docs/skills by review context.
 
 Commits are authored solely by the human maintainer. Never include AI/tool
 co-author, sign-off, assistance, generated-with, author, body, or collaborator

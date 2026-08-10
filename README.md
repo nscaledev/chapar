@@ -1,183 +1,170 @@
 # Chapar
 
-Chapar describes software once, resolves it for a reviewed data-center target,
-and passes the resulting immutable selection to release, cache, CI, image,
-validation, and CVE consumers. The repository currently provides offline
-contracts and plan surfaces only. It contains no active data-center contract
-and no GitHub Actions workflow.
+Chapar builds a reproducible, Spack-based HPC software stack and delivers it
+two ways — as tcl modulefiles on a shared filesystem, and/or injected into
+Pyxis/Enroot container images (for example NVIDIA hpc-benchmarks) — for
+x86_64 and aarch64 targets. What to build and where everything lives is
+decided by one per-machine site settings file; which packages exist is decided
+by one reviewed catalog.
 
-## Authorities
+## Goals
 
-- `envs/software/spack.yaml` is the sole active root-spec and package-policy
-  catalog. Its top-level `specs:` is empty; the resolver creates the effective
-  manifest.
-- `containers/images/targets.json` owns target facts.
-- `containers/images/containers.json` owns the public container IDs
-  `nvidia-vlad` and `ubuntu-hpcsim` and their accepted sets/targets.
-- `datacenters/<id>/datacenter.json` and
-  `datacenters/<id>/targets/<target>/contract.json` are reviewed desired-state
-  snapshots generated from Cookiecutter input. Data-center contracts may
-  allow or deny registry IDs but cannot redefine them.
-- `containers/images/sources-lock.json` owns external-source custody. Its
-  global status is `blocked`, so every real image build remains blocked even
-  where one category is resolved.
+- One catalog (`envs/software/spack.yaml`) with three composable software
+  sets: `vlad` (cluster validation: benchmarks, profilers, GPU transport),
+  `hpcsim` (simulation/visualization), and `all` (the union).
+- Explicit targets, never probed: `linux-x86_64-generic`, `linux-x86_64-v4`,
+  `linux-aarch64-generic`, `linux-aarch64-gb300` — facts (Spack target, CUDA
+  architectures, LLVM targets, OCI platform) live in
+  `containers/images/targets.json`.
+- Immutable releases: every build stages into a temporary directory and is
+  atomically renamed to `…/<set>/<target>/<release-id>`; a `current` symlink
+  is the only mutable pointer, so rollback is repointing a link.
+- Delivery per target, chosen in site settings: modulefiles, container
+  injection, or both — from the same build.
+- OS independence: the OS scope provides only the bootstrap compiler;
+  everything else is Spack-built, currently on Ubuntu 24.04 builders.
 
-`datacenters/example-lab` and the example context are disposable fixtures with
-`status: example`; no tracked file contains active site values. Create an
-active contract only through a separate review of real, non-secret site input.
+## Layout
 
-## Canonical offline flow
+```
+etc/                  site settings, Spack config scopes, shell setup
+  chapar-site.env.example   copy to chapar-site.env and edit for your machine
+  chapar-defaults.sh        resolves and validates every CHAPAR_* setting
+  init.sh                   source this to work interactively
+  system/ user/             persistent Spack scopes (OS bootstrap / $CHAPAR_* paths)
+envs/software/        the catalog (spack.yaml) and the release driver (release.sh)
+src/chapar/           the operator CLI: uv run chapar --help
+containers/images/    target/container registries, source custody lock
+validation/           Slurm validation suites and their offline fixtures
+ci/                   Slurm submission, buildcache push, CVE deployment
+docs/                 task guides — see docs/README.md
+tests/                pytest suite: make test
+```
 
-The following is the only complete runnable operator sequence in the docs. It
-uses disposable directories and performs no Spack build, Slurm submission,
-module load, image import, publication, or live-path mutation.
+## Quick start
 
 ```bash
-set -euo pipefail
-WORK_ROOT=""
-cleanup() {
-  if [ -n "${WORK_ROOT:-}" ] && [ -d "$WORK_ROOT" ]; then
-    rm -rf -- "$WORK_ROOT"
-  fi
-}
-trap cleanup EXIT
+git clone <chapar-repo-url> chapar && cd chapar
 
-TEMP_ROOT="$(python3 -c 'import os, tempfile; print(os.path.realpath(tempfile.gettempdir()))')"
-WORK_ROOT="$(mktemp -d "$TEMP_ROOT/chapar-offline.XXXXXX")"
-sed "s#/tmp/chapar-example#$WORK_ROOT/site#g" \
-  cookiecutter/chapar-datacenter/examples/example-context.yaml \
-  > "$WORK_ROOT/context.yaml"
-uv run tools/chapar_datacenter_template.py render \
-  "$WORK_ROOT/context.yaml" \
-  --output-root "$WORK_ROOT"
-uv run tools/chapar_datacenter_template.py validate-tree \
-  "$WORK_ROOT/datacenters/example-lab"
+# 1. Tools: uv (runs the CLI) and Spack (builds the stack)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+bash etc/install-spack.sh
 
-RESOLVED="$WORK_ROOT/resolved"
-SELECTION_SHA256="$(uv run tools/chapar_resolve.py \
-  --catalog "$PWD/envs/software/spack.yaml" \
-  --targets "$PWD/containers/images/targets.json" \
-  --containers "$PWD/containers/images/containers.json" \
-  --datacenter "$WORK_ROOT/datacenters/example-lab/datacenter.json" \
-  --contract "$WORK_ROOT/datacenters/example-lab/targets/linux-x86_64-generic/contract.json" \
-  --datacenter-id example-lab \
-  --software-set hpcsim \
-  --target linux-x86_64-generic \
-  --release-id offline-release \
-  --run-id offline-run \
-  --output-dir "$RESOLVED")"
-printf '%s\n' "$SELECTION_SHA256" > "$RESOLVED/selection.sha256"
+# 2. Site settings: where things install, what to build, how to deliver it
+cp etc/chapar-site.env.example etc/chapar-site.env
+"${EDITOR:-vi}" etc/chapar-site.env
 
-bash envs/software/release.sh plan \
-  --selection "$RESOLVED/selection.json" \
-  --selection-digest "$SELECTION_SHA256"
-python3 ci/selection-plan.py \
-  --selection "$RESOLVED/selection.json" \
-  --selection-digest "$SELECTION_SHA256" \
-  --contract "$WORK_ROOT/datacenters/example-lab/targets/linux-x86_64-generic/contract.json" \
-  --datacenter example-lab --software-set hpcsim \
-  --target linux-x86_64-generic \
-  --release-id offline-release --run-id offline-run
-CHAPAR_DRY_RUN=1 ./validation/run \
-  --selection "$RESOLVED/selection.json" \
-  --selection-digest "$SELECTION_SHA256" \
-  --contract "$WORK_ROOT/datacenters/example-lab/targets/linux-x86_64-generic/contract.json" \
-  integrity-test
-python3 ci/cve-checker.py --plan \
-  --selection "$RESOLVED/selection.json" \
-  --selection-digest-file "$RESOLVED/selection.sha256"
+# 3. Bind the shell: Spack scopes, ccache, promoted modules (if any)
+source etc/init.sh
+
+# 4. Explore
+uv run chapar --help
+uv run chapar catalog list --set vlad --arch aarch64
+uv run chapar target list
 ```
 
-The resolver writes `selection.json`, `spack.yaml`, and `target-policy.yaml`
-and prints the selection digest; the operator records that exact value as
-`selection.sha256` beside them. The policy tuple is
-`datacenter/software-set/target`; `release-id` and `run-id` are invocation
-identity. Consumers recompute the selection digest and reject ambient path,
-profile, environment, partition, or publication overrides.
+With no site file at all, everything defaults to a private tree under
+`~/.spack/chapar` — safe for a workstation. Set `CHAPAR_INSTALL_MODE=public`
+and `CHAPAR_PUBLIC_ROOT=/shared/chapar` in the site file for a cluster.
 
-The CI submission dry run requires the generated contract to be installed at
-`datacenters/<id>/targets/<target>/contract.json`. The disposable renderer
-deliberately writes elsewhere, so the sequence above exercises its underlying
-planner without installing a fake active contract.
+## Building a release
 
-## Path taxonomy
+A release is identified by software set + target + release id. Offline, on
+any machine, print exactly what a build would do:
 
-Every target contract declares these classes explicitly:
-
-- durable writable: install tree, releases, modulefiles, writable buildcache,
-  ccache, container outputs, receipts, and evidence;
-- ordered read-only inputs: software catalog, target registry, container
-  registry, source lock, and optional seed mirror;
-- temporary: release staging, Spack build stage, image staging, validation
-  work, and resolver work.
-
-The resolver namespaces mutable outputs by data center, software set, target,
-release ID, and/or run ID as appropriate. Sharing is forbidden unless both
-contracts opt into the exact path class. Seed mirrors are always read-only.
-
-`/resources/chapar/vlad` and `/resources/chapar/hpcsim` are immutable legacy
-shadow/canary roots. The resolver rejects overlap with `/resources/chapar`.
-This work grants no migration, retirement, deletion, promotion, or mutation
-approval for either root.
-
-## Historical inventory
-
-The canonical exact historical inventory is
-`envs/software/tests/fixtures/historical-root-inventory.json`. Generate the
-full exact spec delta with `envs/software/tests/inventory.py`; the block below
-is machine-checked against that source.
-
-<!-- software-inventory:begin -->
-```json
-{
-  "counts": {
-    "hpcsim": 75,
-    "hpcsim_only": 48,
-    "shared": 27,
-    "variant_difference_packages": 10,
-    "vlad": 42,
-    "vlad_only": 15
-  },
-  "package_name_differences": {
-    "hpcsim_only": [
-      "adios2", "cdo", "cgns", "eccodes", "exodusii", "ffmpeg", "fftw",
-      "gdb", "hdf5", "hdf5-vol-async", "imagemagick",
-      "intel-mpi-benchmarks", "intel-oneapi-mpi", "libffi", "libpressio",
-      "nccmp", "nco", "ncview", "neovim", "netcdf-c", "netcdf-fortran",
-      "netlib-scalapack", "npm", "nvshmem", "openblas", "parallel-netcdf",
-      "pkgconf", "pulseaudio", "seacas", "silo", "sz", "tcl", "tk",
-      "tmux", "valgrind", "zfp"
-    ],
-    "vlad_only": ["ccache", "extrae", "ipm", "mpip", "py-mpi4py", "py-py-spy"]
-  },
-  "variant_difference_packages": [
-    "babelstream", "caliper", "hwloc", "nccl", "nccl-tests", "nvbandwidth",
-    "nvtop", "openmpi", "python", "ucx"
-  ]
-}
+```bash
+bash envs/software/release.sh plan 20260809a --set vlad --target linux-x86_64-v4
 ```
-<!-- software-inventory:end -->
 
-Package-name differences do not hide variant differences: the exact report
-records both. The current catalog preserves provenance classifications and
-deterministically composes `vlad`, `hpcsim`, and union `all` selections.
+On a builder (directly, or via Slurm):
 
-## Deferred target-platform gates
+```bash
+bash envs/software/release.sh build 20260809a --set vlad --target linux-x86_64-v4
+# or, submitting to the partition the site settings declare for this tuple:
+make submit SOFTWARE_SET=vlad TARGET=linux-x86_64-v4 RELEASE_ID=20260809a
+make submit SOFTWARE_SET=vlad TARGET=linux-x86_64-v4 RELEASE_ID=20260809a DRY_RUN=true
+```
 
-Offline contract and selection behavior is verified; target-platform behavior
-not validated. A human operator must separately approve and run, on matching
-Ubuntu 24.04 builders/Slurm nodes:
+The build bootstraps ccache with the OS compiler, concretizes the catalog for
+the selected set and target, installs into the shared padded store, generates
+hash-free `{name}/{version}` tcl modules, and publishes the immutable release
+with its own `spack.lock` and `metadata.json`. Details: `docs/building.md`.
 
-- Spack concretization and versioned release build/promotion;
-- shared-filesystem atomic-rename and ownership/group checks;
-- buildcache publication or any legacy-cache migration;
-- Slurm submission and integrity, GPU, RDMA, MPI, NCCL, or I/O validation;
-- source-lock completion, Enroot import/export, `.sqsh` validation, and image
-  publication for each registry-approved tuple;
-- the container-injection checks that need a real rootfs: the pre/post rootfs
-  inventory diff, the release-versus-base glibc comparison, the in-image
-  unshadowing check, and `validation/tests/container-smoke.sbatch`. See
-  `docs/container-injection.md` for the host-versus-image split those enforce.
+## Delivering modules
 
-No platform command above is claimed to have run. See the focused docs for
-contracts and gates; they link here instead of duplicating this sequence.
+```bash
+bash envs/software/release.sh publish-modules 20260809a --set vlad --target linux-x86_64-v4
+PUBLISH_CURRENT=true bash envs/software/release.sh promote 20260809a --set vlad --target linux-x86_64-v4
+module use "$CHAPAR_MODULE_ROOT/vlad/linux-x86_64-v4/current"
+module avail
+```
+
+`publish-modules` requires the site delivery policy for the tuple to include
+`modules` (`CHAPAR_DELIVER`). Login shells that source `etc/init.sh` (or the
+`etc/profile.d/zz-chapar.sh` hook) pick up the promoted release
+automatically. Details: `docs/delivering-modules.md`.
+
+## Building a container image
+
+The same release can be injected into a registered base image — the store
+prefixes are copied in at their identical absolute paths under `/opt/chapar`,
+modules stay opt-in, and the base image is proven undisturbed:
+
+```bash
+uv run chapar image preflight --mode build
+uv run chapar image build --base nvidia-vlad --target linux-x86_64-v4 \
+    --release-dir "$CHAPAR_RELEASE_ROOT/vlad/linux-x86_64-v4/20260809a" \
+    --image-id vlad-20260809a --plan-only
+# drop --plan-only on a builder; then seal the validated image:
+uv run chapar image publish --source <sqsh> --destination-directory <dir> \
+    --destination-name <name>.sqsh --expected-sha256 <sha> --expected-size <bytes>
+```
+
+Real image builds stay blocked until `containers/images/sources-lock.json`
+reaches `status: complete` (the NVIDIA base image needs an authenticated
+fetch to pin). Details: `docs/container-images.md` and
+`docs/container-injection.md` for the injection contract.
+
+## Validating a release
+
+```bash
+./validation/run --release-dir "$CHAPAR_RELEASE_ROOT/vlad/linux-x86_64-v4/20260809a" list
+CHAPAR_DRY_RUN=1 ./validation/run --release-dir <release> all
+./validation/run --release-dir <release> node-smoke        # sbatch on a cluster
+uv run chapar validate analyze --suite node-smoke --results-dir <results>
+```
+
+Details: `docs/validation.md`. Only offline fixture behavior is verified in
+this checkout; suite behavior on real hardware is a separate, operator-run
+gate.
+
+## CVE scanning
+
+```bash
+uv run chapar cve scan --release-dir <release> --plan
+```
+
+The scan inventory is the release's own `spack.lock` roots. Details:
+`docs/cve.md`.
+
+## Configuration model
+
+Precedence, lowest to highest: Spack defaults → `etc/system` (OS bootstrap
+externals only) → `etc/user` (paths via `$CHAPAR_*`) → the build's own
+command-line scope. The `$CHAPAR_*` values come from your environment, then
+`etc/chapar-site.env`, then built-in defaults — resolved and validated by
+`etc/chapar-defaults.sh`, which both `etc/init.sh` and `release.sh` source,
+so interactive shells and builds always agree. The full variable table is in
+`etc/README.md`.
+
+## Development
+
+```bash
+make test    # pytest: CLI, image pipeline, validation planning, shell suites
+make lint    # ruff + basedpyright over src/ and tests/
+```
+
+## Documentation
+
+Task guides are indexed in `docs/README.md`. Agent/contributor rules are in
+`AGENTS.md`.

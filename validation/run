@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Release-bound validation dispatcher. Every suite binds to one immutable
+# release directory; site settings (etc/chapar-defaults.sh) supply the default
+# release pointer, the results root, and Slurm placement.
+
 VALIDATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-selection=""
-contract=""
-selection_digest=""
+REPO_ROOT="$(cd "${VALIDATION_DIR}/.." && pwd)"
+
+release_dir=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --selection) selection="${2:-}"; shift 2 ;;
-    --selection-digest) selection_digest="${2:-}"; shift 2 ;;
-    --contract) contract="${2:-}"; shift 2 ;;
+    --release-dir) release_dir="${2:-}"; shift 2 ;;
     --*) echo "Unknown option: $1" >&2; exit 2 ;;
     *) break ;;
   esac
@@ -17,64 +19,96 @@ done
 cmd="${1:-help}"
 
 if [ -n "${ENV_NAME:-}" ]; then
-  echo "ERROR: ENV_NAME is obsolete; pass --selection and --contract" >&2
+  echo "ERROR: ENV_NAME is obsolete; validation binds to a release directory" >&2
   exit 2
 fi
 
-require_selection() {
-  if [ -z "$selection" ] || [ -z "$selection_digest" ] || [ -z "$contract" ]; then
-    echo "ERROR: --selection, --selection-digest, and --contract are required" >&2
+# Builders have no uv; the chapar package runs stdlib-only from the checkout.
+chapar_validate() {
+  PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" python3 -m chapar validate "$@"
+}
+
+# One validation-run id namespaces every suite this invocation submits.
+run_id="$(date -u +%Y%m%d-%H%M%S).$$"
+
+require_release() {
+  # Site settings supply the default release pointer, CHAPAR_VALIDATION_ROOT,
+  # and CHAPAR_SLURM_*; variables the caller already exported win.
+  # shellcheck source=../etc/chapar-defaults.sh
+  . "${REPO_ROOT}/etc/chapar-defaults.sh" || exit 2
+  if [ -z "${release_dir}" ]; then
+    if [ -z "${CHAPAR_TARGET}" ]; then
+      echo "ERROR: pass --release-dir or set CHAPAR_TARGET in the site settings" >&2
+      exit 2
+    fi
+    release_dir="${CHAPAR_RELEASE_ROOT}/${CHAPAR_SOFTWARE_SET}/${CHAPAR_TARGET}/current"
+  fi
+  # Jobs must not chase a moving `current`: resolve the promotion pointer to
+  # the concrete immutable release before anything is planned or exported.
+  # `chapar validate plan` then refuses a directory whose name is not its
+  # recorded release_id, so a pointer can never slip through unresolved.
+  if ! release_dir="$(readlink -f -- "${release_dir}")" || [ ! -d "${release_dir}" ]; then
+    echo "ERROR: release directory does not exist: ${release_dir:-<unresolved>}" >&2
     exit 2
   fi
 }
 
 render_plan() {
-  python3 "$VALIDATION_DIR/selection.py" plan \
-    --selection "$selection" --selection-digest "$selection_digest" --contract "$contract" --test "$1"
+  chapar_validate plan --release-dir "${release_dir}" --test "$1" --run-id "${run_id}"
 }
 
 submit_test() {
   local name="$1"
   local test_file="$VALIDATION_DIR/tests/${name}.sbatch"
-  local placement
-  local sealed
-  sealed="$(mktemp -d "${TMPDIR:-/tmp}/chapar-validation.XXXXXX")"
-  chmod 0700 "$sealed"
-  trap 'rm -rf -- "${sealed:-}"' RETURN
-  placement="$(python3 "$VALIDATION_DIR/selection.py" shell --selection "$selection" --selection-digest "$selection_digest" --contract "$contract" --test "$name" --seal-dir "$sealed")"
-  local sealed_selection="$sealed/selection.json"
-  local sealed_contract="$sealed/contract.json"
-  local results_root partition constraint account qos
-  IFS=$'\t' read -r _ _ _ _ results_root partition constraint account qos <<< "$placement"
-  # container-smoke needs one input the selection cannot carry: the sealed .sqsh
-  # and its digest. Passed through only when the operator set them; the test
-  # verifies the path lies inside the selection's own container_outputs root and
+  local identity results_root
+  identity="$(chapar_validate plan --format shell --release-dir "${release_dir}" --test "${name}" --run-id "${run_id}")"
+  IFS=$'\t' read -r _ _ _ _ _ results_root <<< "${identity}"
+  # The export list is closed: a job receives the concrete release directory,
+  # its results root, the site validation root, and nothing else the caller's
+  # environment happens to carry.
+  local exports="CHAPAR_RELEASE_DIR=${release_dir},RESULTS_ROOT=${results_root},CHAPAR_VALIDATION_ROOT=${CHAPAR_VALIDATION_ROOT}"
+  # container-smoke needs the site container facts: the registry key of the
+  # base image and the output root the sealed .sqsh must lie inside. The suite
   # SKIPs when they are absent, so this grants no ambient path authority.
-  local image_exports=""
+  if [ -n "${CHAPAR_CONTAINER_BASE:-}" ]; then
+    exports="${exports},CHAPAR_CONTAINER_BASE=${CHAPAR_CONTAINER_BASE}"
+  fi
+  if [ -n "${CHAPAR_CONTAINER_OUTPUT_ROOT:-}" ]; then
+    exports="${exports},CHAPAR_CONTAINER_OUTPUT_ROOT=${CHAPAR_CONTAINER_OUTPUT_ROOT}"
+  fi
+  # container-smoke also needs one input no release can carry: the sealed .sqsh
+  # and its digest. Passed through only when the operator set them; the test
+  # verifies the path lies inside the container output root and SKIPs when they
+  # are absent.
   if [ -n "${CHAPAR_CONTAINER_IMAGE:-}" ] && [ -n "${CHAPAR_CONTAINER_IMAGE_SHA256:-}" ]; then
-    image_exports=",CHAPAR_CONTAINER_IMAGE=$CHAPAR_CONTAINER_IMAGE,CHAPAR_CONTAINER_IMAGE_SHA256=$CHAPAR_CONTAINER_IMAGE_SHA256"
+    exports="${exports},CHAPAR_CONTAINER_IMAGE=${CHAPAR_CONTAINER_IMAGE},CHAPAR_CONTAINER_IMAGE_SHA256=${CHAPAR_CONTAINER_IMAGE_SHA256}"
   fi
   # Offline hardware fixtures, passed through only in test mode. The suites
   # themselves refuse a VALIDATION_TEST_* variable outside that mode and reject an
   # unrecognised one, so this grants no authority a suite would otherwise accept.
-  local fixture_exports=""
   if [ "${VALIDATION_TEST_MODE:-}" = "1" ]; then
-    fixture_exports=",VALIDATION_TEST_MODE=1"
+    exports="${exports},VALIDATION_TEST_MODE=1"
     local fixture_variable
     for fixture_variable in VALIDATION_TEST_ROOT VALIDATION_TEST_SIDE_EFFECT_MARKER \
       VALIDATION_TEST_CONTAINER_SMOKE VALIDATION_TEST_CPU VALIDATION_TEST_GPU \
       VALIDATION_TEST_NODE_ADMISSION VALIDATION_TEST_RDMA VALIDATION_TEST_ROCE \
       VALIDATION_TEST_STORAGE; do
       if [ -n "${!fixture_variable:-}" ]; then
-        fixture_exports="${fixture_exports},${fixture_variable}=${!fixture_variable}"
+        exports="${exports},${fixture_variable}=${!fixture_variable}"
       fi
     done
   fi
   if [ -n "${SLURM_JOB_ID:-}" ]; then
-    CHAPAR_SELECTION="$sealed_selection" CHAPAR_SELECTION_DIGEST="$selection_digest" CHAPAR_TARGET_CONTRACT="$sealed_contract" RESULTS_ROOT="$results_root" bash "$test_file"
+    CHAPAR_RELEASE_DIR="${release_dir}" RESULTS_ROOT="${results_root}" bash "$test_file"
   else
-    sbatch --wait --partition "$partition" --constraint "$constraint" --account "$account" --qos "$qos" \
-      --export="CHAPAR_SELECTION=$sealed_selection,CHAPAR_SELECTION_DIGEST=$selection_digest,CHAPAR_TARGET_CONTRACT=$sealed_contract,RESULTS_ROOT=$results_root${image_exports}${fixture_exports}" "$test_file"
+    # Placement comes from the site policy (CHAPAR_SLURM_*); an unset value
+    # means "no explicit flag", never an empty argument.
+    local placement=()
+    if [ -n "${CHAPAR_SLURM_PARTITION}" ]; then placement+=(--partition "${CHAPAR_SLURM_PARTITION}"); fi
+    if [ -n "${CHAPAR_SLURM_CONSTRAINT}" ]; then placement+=(--constraint "${CHAPAR_SLURM_CONSTRAINT}"); fi
+    if [ -n "${CHAPAR_SLURM_ACCOUNT}" ]; then placement+=(--account "${CHAPAR_SLURM_ACCOUNT}"); fi
+    if [ -n "${CHAPAR_SLURM_QOS}" ]; then placement+=(--qos "${CHAPAR_SLURM_QOS}"); fi
+    sbatch --wait "${placement[@]}" --export="${exports}" "$test_file"
   fi
 }
 
@@ -89,7 +123,7 @@ case "$cmd" in
     done
     ;;
   all)
-    require_selection
+    require_release
     # Exit code 77 means SKIP (test requirements not met on this node);
     # it is reported but does not fail the run.
     failed=0
@@ -112,24 +146,31 @@ case "$cmd" in
     [ "$failed" = "0" ] || exit 1
     ;;
   help|--help|-h)
-    echo "Usage: ./validation/run <test>"
-    echo "       ./validation/run --selection <selection.json> --selection-digest <sha256> --contract <contract.json> <test>"
+    echo "Usage: ./validation/run [--release-dir <release>] <test>"
+    echo "       ./validation/run [--release-dir <release>] all"
     echo "       ./validation/run list"
-    echo "       ./validation/run all"
+    echo ""
+    echo "Without --release-dir the promoted release is used:"
+    echo '  ${CHAPAR_RELEASE_ROOT}/${CHAPAR_SOFTWARE_SET}/${CHAPAR_TARGET}/current'
+    echo "(site settings via etc/chapar-defaults.sh; the pointer is resolved to"
+    echo "the concrete immutable release before submission)."
     echo ""
     echo "Environment variables:"
+    echo "  CHAPAR_DRY_RUN=1       Print what would run without executing"
+    echo "  CHAPAR_SLURM_*         Partition/constraint/account/QoS placement"
+    echo ""
+    echo "Inline runs only (inside an existing allocation; sbatch submissions"
+    echo "use a closed export list that does not forward these):"
     echo "  CHAPAR_NODES           Override node count for multi-node tests"
     echo "  CHAPAR_TIME            Override time limit"
     echo "  CHAPAR_KEEP_MODULES=1  Skip module purge (use pre-loaded environment)"
-    echo "  CHAPAR_DRY_RUN=1       Print what would run without executing"
-    echo "  RESULTS_ROOT           Custom results directory (default: validation/results/)"
-    echo ""
-    echo "Exit codes: 0 = pass, 77 = skipped (requirements not met), other = fail"
     echo "  MPI_RDMA_BYTES         Message size for MPI RDMA tests (default: 8388608)"
     echo "  MPI_RDMA_ITERS         Iterations for MPI RDMA tests (default: 100)"
+    echo ""
+    echo "Exit codes: 0 = pass, 77 = skipped (requirements not met), other = fail"
     ;;
   *)
-    require_selection
+    require_release
     test_file="$VALIDATION_DIR/tests/${cmd}.sbatch"
     if [ ! -f "$test_file" ]; then
       echo "Unknown test: $cmd" >&2

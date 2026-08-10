@@ -43,6 +43,19 @@
     },
     "verdict": {"enum": ["PASS", "WARN", "FAIL", "SKIP"]},
     "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "release": {
+      "description": "Identity of the immutable release the suite ran against, recorded from its metadata.json plus the run-time digest of its spack.lock. Fixture and standalone runs bind to no release and carry no block; when present, every field is required so evidence can never name half a release.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["software_set", "target", "release_id", "run_id", "release_lock_sha256"],
+      "properties": {
+        "software_set": {"enum": ["vlad", "hpcsim", "all"]},
+        "target": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "release_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "run_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "release_lock_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
     "policies": {
       "type": "object",
       "additionalProperties": false,

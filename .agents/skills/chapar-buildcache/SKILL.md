@@ -1,22 +1,24 @@
 ---
 name: chapar-buildcache
-description: Modify or debug selection-bound Chapar buildcache planning, seed mirrors, publication, indexing, quarantine, or migration policy.
+description: Modify or debug Chapar buildcache planning, seed mirrors, publication, or migration policy.
 ---
 
 # Chapar buildcache
 
-Buildcache authority comes from the verified target contract and selection.
-Distinguish writable tuple-scoped buildcache, ordered read-only seed mirrors,
-ccache, and run-scoped build stages. Never infer these from ambient variables,
-a site file, or an old environment.
+The writable buildcache lives at `${CHAPAR_BUILDCACHE_ROOT}/<target>`, one
+per target. Read-only seed mirrors are the site's opt-in
+`CHAPAR_SEED_MIRRORS` list — never derived from `/resources/chapar`, whose
+legacy caches stay immutable. Autopush from a build follows
+`PUBLISH_BUILDCACHE=true`; the default is no publication.
 
-Normal releases do not auto-import legacy caches. Migration remains plan-only,
-copy-only, non-overwriting, and non-deleting until separately approved and
-validated. Do not clean, migrate, or retire any cache or immutable legacy
-shadow/canary root (`/resources/chapar/vlad`, `/resources/chapar/hpcsim`).
+`ci/push-buildcache.sh --release-dir <release>` is plan-by-default:
+`--execute` pushes the verified release's roots to the site cache and again
+requires `PUBLISH_BUILDCACHE=true`. Migration from a legacy cache is
+plan-only via `release.sh migrate-buildcache <id> --legacy-source <path>` —
+any future execution must stay copy-only, non-overwriting, non-deleting,
+and separately approved.
 
-Validate `ci/push-buildcache.sh` syntax and its selection-bound plan/negative
-fixtures. Platform publication, index refresh, binary reuse, filesystem layout,
-ownership, padded-length compatibility, and migration execution are deferred.
-Offline contract and selection behavior is verified; target-platform behavior
-not validated.
+Binary reuse depends on padding continuity: `etc/chapar-install-tree.sh`
+detects the placeholder depth an existing store commits to and reproduces
+it, so never bypass its helpers when rendering a scope. Real publication,
+index refresh, and reuse verification are operator gates on a builder.

@@ -1,6 +1,0 @@
-schema: https://nscaledev.github.io/chapar/schemas/target-policy/v1
-schema_version: 1
-target:
-  id: linux-x86_64-v4
-  native_arch: x86_64
-  spack_target: x86_64_v4

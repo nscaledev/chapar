@@ -1,9 +1,0 @@
-{
-  "datacenter_id": "example-lab",
-  "payload_json": "{}",
-  "_copy_without_render": [],
-  "__prompts__": {
-    "datacenter_id": "Stable lower-case data-center identifier",
-    "payload_json": "Canonical validated render payload supplied by tools/chapar_datacenter_template.py"
-  }
-}

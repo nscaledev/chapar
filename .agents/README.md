@@ -11,14 +11,16 @@ to the Project Skills table in `AGENTS.md`. That is the whole procedure.
 
 ## Conventions
 
-All software workflows start from `envs/software/spack.yaml`, a reviewed
-`datacenters/<id>` snapshot, and resolver-produced `selection.json` plus
-`selection.sha256`. Skills must not restore old environment, profile, or
-site-file authority, and must not copy the canonical runnable flow out of
-`README.md` — link to it instead.
+All software workflows start from the catalog (`envs/software/spack.yaml`
+with its named root lists), the per-machine site settings
+(`etc/chapar-site.env` resolved by `etc/chapar-defaults.sh`), and verified
+immutable release directories under `${CHAPAR_RELEASE_ROOT}`. Skills must
+not invent ambient authority beyond those, and must not copy the runnable
+flows out of `README.md` — link to them instead.
 
-Keep the public `nvidia-vlad` and `ubuntu-hpcsim` IDs. Keep `vlad-image` only
-where historical internal runtime paths, units, and variables require it.
+Keep the public `nvidia-vlad` and `ubuntu-hpcsim` container IDs. Distinguish
+offline evidence (`make test`, plan modes, fixtures) from operator platform
+gates.
 
 Validate edited skills with the local `skill-creator` validator and preserve the
 human-only attribution policy.

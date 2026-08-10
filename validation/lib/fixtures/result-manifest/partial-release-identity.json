@@ -1,0 +1,27 @@
+{
+  "artifacts": {
+    "prometheus": "suite.prom",
+    "summary": "summary.json"
+  },
+  "generated_at": "2026-07-30T12:01:00Z",
+  "kind": "suite",
+  "policies": {
+    "threshold": "fail",
+    "unavailable": "fail"
+  },
+  "provenance": {
+    "ci_authoritative": true,
+    "mode": "runner"
+  },
+  "release": {
+    "release_id": "rel-2026-08-01",
+    "run_id": "run-001",
+    "software_set": "vlad",
+    "target": "linux-x86_64-v4"
+  },
+  "run_id": "fixture-pass-001",
+  "run_issued_at": "2026-07-30T12:00:00Z",
+  "schema_version": "1.0",
+  "suite": "node-admission",
+  "verdict": "PASS"
+}

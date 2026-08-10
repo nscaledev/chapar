@@ -1,26 +1,26 @@
 ---
 name: chapar-spack-env-change
-description: Change Chapar software root specs, classifications, package policy, providers, or variants in the single envs/software catalog. Use for Vlad, HPCSim, or union software-set membership changes.
+description: Change Chapar software root specs, package policy, providers, or variants in the single envs/software catalog. Use for Vlad, HPCSim, or union software-set membership changes.
 ---
 
 # Chapar software catalog change
 
-`envs/software/spack.yaml` is the sole active root-spec/package-policy source.
-Do not recreate per-environment manifests, edit `spack/`, edit locks, or add a
-package overlay unless explicitly requested.
+`envs/software/spack.yaml` is the only catalog. Roots live in four named
+definition lists — `shared_roots`, `vlad_roots`, `hpcsim_roots`, and
+`hpcsim_x86_only_roots` — selected by `when:` conditions on
+`CHAPAR_SOFTWARE_SET` and `CHAPAR_TARGET`. Never hand-edit those conditions:
+`src/chapar/catalog/model.py` pins the exact expected string per list, and
+`chapar catalog list` fails on any drift. Move roots between lists instead.
 
-Each root has one stable ID, normalized spec, provenance classification, and
-software-set membership. Preserve deterministic `vlad`, `hpcsim`, and `all`
-composition, including variant-distinct roots. Target facts belong only in
-`containers/images/targets.json`; data-center allow/deny policy and paths
-belong only in reviewed `datacenters/<id>` contracts.
+Preserve membership invariants: `vlad` must never gain x86-only roots, and
+the `all` set is exactly the union. Target facts (Spack target, CUDA
+architectures, LLVM targets) belong only in `containers/images/targets.json`.
+Do not edit `spack/`, locks, or add a `spack_repo/` overlay unless asked.
 
-Test catalog/inventory behavior with the existing offline suites. Then render a
-disposable example and resolve every affected allowed tuple using the canonical
-flow in `README.md`. Inspect the generated exact `spack.yaml`,
-`target-policy.yaml`, `selection.json`, and recorded `selection.sha256`.
+After a change, run `uv run --group dev pytest tests/catalog` and regenerate
+the generated catalog README:
+`uv run chapar catalog readme --render > envs/software/README.md`
+(verify with `--check envs/software/README.md`).
 
-Do not concretize, build, install, promote, load modules, or invoke target
-validation from an agent session. Those are explicit future platform gates.
-Offline contract and selection behavior is verified; target-platform behavior
-not validated.
+Never run a direct Spack install. Concretizing the changed catalog on a real
+builder is an operator gate; offline tests do not prove a solve.

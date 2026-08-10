@@ -36,9 +36,9 @@ results_dir="${VALIDATION_NODE_DIR}"
 export CPU_PLATFORM_FIXTURE="${fixture}"
 export CPU_PLATFORM_RESULT="${results_dir}/cpu_platform.json"
 export CPU_PLATFORM_CAPABILITY="${validation_dir}/config/capability.yaml"
-# The release directory comes from the sealed selection that validation/run
-# already verified and wrote read-only, not from an ambient variable.
-export CPU_PLATFORM_SELECTION="${CHAPAR_SELECTION:-}"
+# The release directory is the concrete immutable release validation/run
+# resolved and verified before submission, never a mutable `current` pointer.
+export CPU_PLATFORM_RELEASE="${CHAPAR_RELEASE_DIR:-}"
 
 python3 <<'PY'
 import json
@@ -93,12 +93,17 @@ def features_for_cpuinfo(cpuinfo):
 
 
 def release_architecture(release_dir):
+    """The release's declared Spack target from its own metadata.json."""
     if not release_dir:
         return "", ""
-    path = pathlib.Path(release_dir) / ".chapar-arch"
+    path = pathlib.Path(release_dir) / "metadata.json"
     if not path.is_file():
         return "", f"release metadata is missing: {path}"
-    return path.read_text(encoding="utf-8").strip(), ""
+    try:
+        facts = json.loads(path.read_text(encoding="utf-8"))["target_facts"]
+        return str(facts["spack_target"]), ""
+    except (ValueError, KeyError, TypeError):
+        return "", f"release metadata has no target facts: {path}"
 
 
 def elf_machines(paths):
@@ -116,16 +121,6 @@ def elf_machines(paths):
     return values
 
 
-def release_directory(selection_path):
-    if not selection_path:
-        return ""
-    try:
-        document = json.loads(pathlib.Path(selection_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ""
-    return str(document.get("paths", {}).get("release_final", ""))
-
-
 fixture = os.environ["CPU_PLATFORM_FIXTURE"]
 if fixture:
     payload = json.loads((pathlib.Path(fixture) / "manifest.json").read_text(encoding="utf-8"))
@@ -138,7 +133,7 @@ else:
     cpuinfo_path = pathlib.Path("/proc/cpuinfo")
     cpuinfo = cpuinfo_path.read_text(encoding="utf-8", errors="replace") if cpuinfo_path.is_file() else ""
     architecture = normalized_architecture(platform.machine())
-    release_arch, release_error = release_architecture(release_directory(os.environ["CPU_PLATFORM_SELECTION"]))
+    release_arch, release_error = release_architecture(os.environ["CPU_PLATFORM_RELEASE"])
     observed = {
         "architecture": architecture,
         "vendor": vendor_for_cpuinfo(cpuinfo, architecture),
@@ -193,13 +188,13 @@ elif release_arch:
     release_is_arm = "aarch64" in release_arch
     release_is_x86 = any(token in release_arch for token in ("x86_64", "zen", "skylake", "icelake", "sapphirerapids"))
     if not release_is_arm and not release_is_x86:
-        failures.append(f".chapar-arch has no supported CPU ISA target: {release_arch}")
+        failures.append(f"release target has no supported CPU ISA: {release_arch}")
     elif release_is_arm != (architecture == "aarch64"):
-        failures.append(f".chapar-arch is incompatible with host ISA: {release_arch} vs {architecture}")
+        failures.append(f"release target is incompatible with host ISA: {release_arch} vs {architecture}")
     elif "zen" in release_arch and vendor != "amd":
-        failures.append(f".chapar-arch requires an AMD Zen target but host vendor is {vendor}")
+        failures.append(f"release requires an AMD Zen target but host vendor is {vendor}")
 elif not fixture:
-    warnings.append("no sealed selection supplied a release directory; .chapar-arch compatibility was not evaluated")
+    warnings.append("no release directory was supplied; release target compatibility was not evaluated")
 expected_machine = machine_for_architecture(architecture)
 for elf in observed.get("elf", []):
     if elf["error"]:

@@ -3,7 +3,7 @@
 ## Repository rules
 
 - This is the nscale-internal development line. It contains no
-  `.github/workflows/`; `docs/ci-github-actions.md` is proposal-only.
+  `.github/workflows/`; CI automation is a recorded follow-up decision.
 - Keep the primary checkout at the repository root and linked worktrees under
   `foobar/<name>/`. Inspect `git worktree list --porcelain` before worktree
   operations and never remove a dirty worktree without explicit approval.
@@ -22,34 +22,38 @@
   apply here. Never bypass or weaken `.githooks/commit-msg`.
 - Do not stage, commit, push, or open a PR without explicit user approval.
 
-## Single authority and selection flow
+## Authority model
 
-- `envs/software/spack.yaml` is the only active software root/package-policy
-  catalog. Root provenance composes `vlad`, `hpcsim`, and union `all`.
-- `containers/images/targets.json` owns target facts;
-  `containers/images/containers.json` owns public container facts.
-- Cookiecutter generates reviewed desired-state snapshots at
-  `datacenters/<id>/datacenter.json` and
-  `datacenters/<id>/targets/<target>/contract.json`. The committed example is
-  disposable and there is no active contract/site value.
-- `tools/chapar_resolve.py` requires catalog, both registries, data-center and
-  target contracts, data-center/software-set/target, release ID, run ID, and a
-  new output directory. It emits `selection.json`, exact effective
-  `spack.yaml`, and `target-policy.yaml`, prints the selection digest, and the
-  operator records that value as adjacent `selection.sha256`.
-- Release, cache, module, CI, image, validation, and CVE consumers require the
-  exact selection and digest. They reject ambient profile, environment, path,
-  partition, publication, or site-file authority.
-- Never run a direct Spack install. Builds use the selection-bound
-  `envs/software/release.sh` versioned release flow only after platform
-  approval. Offline work uses `plan` only.
-- Run `release.sh` from a clean shell. `etc/init.sh` is for interactive use: it
-  exports the `CHAPAR_*` path variables that `reject_ambient_authority` refuses.
-  `release.sh` derives every path from `--selection` and pins its own
-  `SPACK_SYSTEM_CONFIG_PATH`, user config, and user cache.
-
-The canonical disposable render/resolver/plan command sequence is in
-`README.md`. Other docs and skills link to it instead of copying it.
+- **Site settings decide where and how.** The per-machine file
+  `etc/chapar-site.env` (never committed; example at
+  `etc/chapar-site.env.example`, override location via `CHAPAR_SITE_CONFIG`)
+  plus `etc/chapar-defaults.sh` resolve every `CHAPAR_*` variable: install,
+  release, module, cache, and output roots; per-tuple delivery policy
+  (`CHAPAR_DELIVER`: modules and/or container) and Slurm placement via the
+  site's `chapar_site_target_policy()`; publication flags. `etc/init.sh` binds
+  interactive shells; `envs/software/release.sh` binds builds — both source
+  the same defaults, so they always agree.
+- **Three committed authorities decide what.** `envs/software/spack.yaml` is
+  the only catalog: named root lists selected by `CHAPAR_SOFTWARE_SET`
+  (vlad|hpcsim|all) and `CHAPAR_TARGET` conditions.
+  `containers/images/targets.json` owns target facts (Spack target, CUDA
+  architectures, LLVM targets, OCI platform) — explicit, never probed from
+  the machine; `chapar target scope` renders them as package requirements.
+  `containers/images/containers.json` + `sources-lock.json` own container
+  bases, digest-pinned.
+- **Releases are immutable and self-describing.** `release.sh build` stages
+  and atomically renames to `${CHAPAR_RELEASE_ROOT}/<set>/<target>/<id>`;
+  `current` is the only mutable pointer. `metadata.json` (schema v2) +
+  release-local `spack.lock` are the release's complete self-description;
+  image injection (`chapar image`), validation (`chapar validate`,
+  `validation/run --release-dir`), and CVE scanning (`chapar cve scan`) all
+  verify and consume the release directory — never ambient state.
+- Never run a direct Spack install; builds go through
+  `envs/software/release.sh` (offline `plan` is always safe). Real builds,
+  promotions, image builds, and validation runs on target platforms are
+  operator-approved actions.
+- `uv run chapar --help` is the tool index; every subcommand has `--help`.
+  Tests: `make test`; lint: `make lint`.
 
 ## OS independence
 
@@ -61,40 +65,25 @@ given image happens to ship. The catalog names no OS.
 
 `release.sh` bootstraps ccache with the OS external compiler before installing
 the staged `gcc` root, so ccache accelerates the compiler build and no builder
-needs a system ccache. Spack resolves ccache from PATH with
-`which_string(..., required=True)`, so `config:ccache` is written `false` for
-that first pass and `true` afterwards.
-
-Two ccache installs are therefore expected and correct: the bootstrap copy built
-with the OS compiler, which is a build tool, and the shared catalog root built
-with `gcc@15`, which is the delivered module.
+needs a system ccache. Two ccache installs are expected and correct: the
+bootstrap copy built with the OS compiler (a build tool) and the shared catalog
+root built with `gcc@15` (the delivered module).
 
 ## Path and legacy-state policy
 
-Each target contract explicitly classifies paths:
-
-- durable writable: install tree, releases, modulefiles, writable buildcache,
-  ccache, container outputs, receipts, evidence;
-- ordered read-only: software catalog, target/container registries, source
-  lock, optional seed mirror;
-- temporary: release, Spack, image, validation, and resolver staging/work.
-
-Mutable outputs are namespaced by the canonical tuple plus release/run identity.
-Sharing requires explicit matching opt-ins; seed mirrors are read-only.
-
-`/resources/chapar/vlad` and `/resources/chapar/hpcsim` are immutable legacy
-shadow/canary roots. Do not mutate, migrate, clean, promote, delete, or retire
-them, and never derive new desired state from them. There is no retirement or
+`etc/chapar-defaults.sh` validates every root: absolute, traversal-free, and
+disjoint from `/resources/chapar`. `/resources/chapar/vlad` and
+`/resources/chapar/hpcsim` are immutable legacy shadow/canary roots. Do not
+mutate, migrate, clean, promote, delete, or retire them, and never derive new
+desired state from them (including seed mirrors). There is no retirement or
 migration approval.
 
 ## Container and source custody
 
-Retain public IDs `nvidia-vlad` and `ubuntu-hpcsim`. Retain historical internal
-`vlad-image` names only for compatible runtime paths, units, and variables.
-Selected releases and images bind tuple, selection/contract/registry digests,
-effective manifest, target policy, metadata, and release-local lock bytes.
-Injection preserves build-time absolute prefixes and link/run closure; modules
-remain opt-in.
+Retain public container IDs `nvidia-vlad` and `ubuntu-hpcsim`. Injection
+preserves build-time absolute prefixes under `/opt/chapar` and the link/run
+closure; the base rootfs must be provably undisturbed; modules remain opt-in.
+The injection contract is `docs/container-injection.md`.
 
 `containers/images/sources-lock.json` is globally `blocked`. No real image
 build/import/export/publication is permitted until every source category and
@@ -108,8 +97,8 @@ Load baseline rules plus the matching focused skill:
 |---|---|
 | software roots/package policy | `chapar-spack-env-change` |
 | solve/concretization debug | `chapar-spack-solve-debug` |
-| persistent scopes | `chapar-config-scope-change` |
-| selection-bound release helper | `chapar-release-helper` |
+| persistent scopes / site settings | `chapar-config-scope-change` |
+| release helper | `chapar-release-helper` |
 | buildcache/migration planning | `chapar-buildcache` |
 | images/source custody | `chapar-vlad-image` |
 | CUDA/GDR transport | `chapar-cuda-gdr-transport` |
@@ -135,14 +124,13 @@ above. There is no wiring step, and no harness needs a config change.
 
 ## Validation boundary
 
-Offline contract and selection behavior is verified; target-platform behavior
-not validated. Never claim plan/fixture tests prove target behavior.
-
-Deferred, explicitly approved Ubuntu 24.04/Slurm gates include native
-concretization, release build/promotion, shared-filesystem atomicity and
-ownership, cache publication/migration, module/integrity execution, hardware
-tiers, source-lock completion, Enroot image operations, and final publication.
-No such platform command is claimed to have run.
+Offline behavior (catalog composition, release planning, fixture-mode suites,
+image plan mode, CVE plan mode) is verified by `make test`. Target-platform
+behavior — native concretization, release builds and promotion,
+shared-filesystem atomicity, cache publication, module execution, hardware
+tiers, source-lock completion, Enroot image operations, publication — is not
+validated here and requires explicit operator approval on Ubuntu 24.04/Slurm.
+Never claim plan/fixture tests prove target behavior.
 
 Before any future commit, inspect status/diff/log, split changes by review
 context, enable the commit-msg hook without bypass, and present staged groups

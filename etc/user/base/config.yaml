@@ -14,12 +14,12 @@ config:
     projections:
       all: "{architecture.platform}-{architecture.target}/{name}-{version}-{hash}"
   # A list, as upstream ships it, so Spack falls through when the first entry is
-  # missing or full. The selection-derived stage stays first and authoritative;
-  # the two fallbacks are Spack's own defaults and only apply when
-  # CHAPAR_SPACK_BUILD_STAGE is unset, which previously left build_stage
-  # expanding to nothing at all.
+  # missing or full. The site-derived stage stays first and authoritative; the
+  # two fallbacks are Spack's own defaults. etc/chapar-defaults.sh always
+  # exports CHAPAR_BUILD_STAGE_ROOT, so the first entry never expands to a
+  # literal $VAR.
   build_stage:
-    - $CHAPAR_SPACK_BUILD_STAGE
+    - $CHAPAR_BUILD_STAGE_ROOT
     - $tempdir/$user/spack-stage
     - $user_cache_path/stage
   test_stage: $user_cache_path/test
