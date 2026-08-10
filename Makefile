@@ -1,18 +1,14 @@
-DATACENTER ?=
 SOFTWARE_SET ?=
 TARGET ?=
 RELEASE_ID ?=
-RUN_ID ?=
-SELECTION ?=
-SELECTION_DIGEST ?=
 DRY_RUN ?= false
 WORKTREE_ROOT ?= foobar
 WORKTREE_START ?= HEAD
-MAKE_TARGETS := help build submit clean-locks git-ssh-setup worktree
+MAKE_TARGETS := help build submit test lint clean-locks git-ssh-setup worktree
 WORKTREE_BRANCH_GOALS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 WORKTREE_BRANCH ?= $(or $(BRANCH),$(firstword $(WORKTREE_BRANCH_GOALS)))
 
-.PHONY: help build submit clean-locks git-ssh-setup worktree FORCE
+.PHONY: help build submit test lint clean-locks git-ssh-setup worktree FORCE
 
 ifeq ($(firstword $(MAKECMDGOALS)),worktree)
 ifeq ($(BRANCH),)
@@ -28,9 +24,6 @@ endif
 endif
 
 ifneq ($(filter build submit,$(MAKECMDGOALS)),)
-ifeq ($(strip $(DATACENTER)),)
-$(error DATACENTER is required)
-endif
 ifeq ($(strip $(SOFTWARE_SET)),)
 $(error SOFTWARE_SET is required)
 endif
@@ -40,34 +33,35 @@ endif
 ifeq ($(strip $(RELEASE_ID)),)
 $(error RELEASE_ID is required)
 endif
-ifeq ($(strip $(RUN_ID)),)
-$(error RUN_ID is required)
-endif
-ifeq ($(strip $(SELECTION)),)
-$(error SELECTION is required)
-endif
-ifeq ($(strip $(SELECTION_DIGEST)),)
-$(error SELECTION_DIGEST is required)
-endif
 endif
 
 help:
 	@printf '%s\n' \
-	  'Chapar software build targets:' \
-	  '  make submit            Submit one resolved software tuple' \
+	  'Chapar targets:' \
+	  '  make submit            Submit one software tuple build to Slurm' \
 	  '  make build             Alias for submit' \
+	  '  make test              Run the pytest suite (uv run --group dev pytest)' \
+	  '  make lint              ruff + basedpyright over src and tests' \
 	  '  make clean-locks        Always refuses to remove tracked locks' \
 	  '  make git-ssh-setup      Configure repo-local SSH for GitHub pushes' \
 	  '  make worktree <name>    Create $(WORKTREE_ROOT)/<name> on branch <name>' \
 	  '' \
-	  'Resolved invocation variables required by build/submit:' \
-	  '  DATACENTER SOFTWARE_SET TARGET RELEASE_ID RUN_ID SELECTION SELECTION_DIGEST' \
+	  'Variables required by build/submit (paths and policy come from the site' \
+	  'settings, etc/chapar-site.env):' \
+	  '  SOFTWARE_SET TARGET RELEASE_ID' \
 	  '  DRY_RUN=true verifies a plan without submitting it'
+
+test:
+	uv run --group dev pytest
+
+lint:
+	uv run --group dev ruff check src tests
+	uv run --group dev basedpyright src
 
 build: submit
 
 submit:
-	bash ./ci/submit-env-build.sh --datacenter "$(DATACENTER)" --software-set "$(SOFTWARE_SET)" --target "$(TARGET)" --release-id "$(RELEASE_ID)" --run-id "$(RUN_ID)" --selection "$(SELECTION)" --selection-digest "$(SELECTION_DIGEST)" $(if $(filter true,$(DRY_RUN)),--dry-run)
+	bash ./ci/submit-env-build.sh --set "$(SOFTWARE_SET)" --target "$(TARGET)" --release-id "$(RELEASE_ID)" $(if $(filter true,$(DRY_RUN)),--dry-run)
 
 clean-locks:
 	@printf '%s\n' 'error: clean-locks cannot remove tracked release locks' >&2; exit 2
