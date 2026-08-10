@@ -26,7 +26,7 @@
     "container": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["base_image", "source_lock_category", "accepted_software_sets", "allowed_targets", "module_destination", "injection_requirements", "runtime_requirements"],
+      "required": ["base_image", "source_lock_category", "accepted_software_sets", "allowed_targets", "module_destination"],
       "properties": {
         "base_image": {
           "pattern": "^[a-z0-9][a-z0-9./-]{0,255}$"
@@ -52,38 +52,6 @@
         },
         "module_destination": {
           "pattern": "^/[A-Za-z0-9._/-]+$"
-        },
-        "injection_requirements": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["closure_deptypes", "preserve_base_environment", "prefix_policy"],
-          "properties": {
-            "closure_deptypes": {
-              "const": ["link", "run"]
-            },
-            "preserve_base_environment": {
-              "const": true
-            },
-            "prefix_policy": {
-              "const": "build-time-absolute"
-            }
-          }
-        },
-        "runtime_requirements": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["activation", "require_module_command", "required_roles"],
-          "properties": {
-            "activation": {
-              "const": "module-use-opt-in"
-            },
-            "require_module_command": {
-              "const": true
-            },
-            "required_roles": {
-              "const": ["builders", "validators", "publishers"]
-            }
-          }
         }
       }
     }

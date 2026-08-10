@@ -12,34 +12,14 @@
         "linux-aarch64-generic",
         "linux-aarch64-gb300"
       ],
-      "module_destination": "/opt/chapar/modulefiles",
-      "injection_requirements": {
-        "closure_deptypes": ["link", "run"],
-        "preserve_base_environment": true,
-        "prefix_policy": "build-time-absolute"
-      },
-      "runtime_requirements": {
-        "activation": "module-use-opt-in",
-        "require_module_command": true,
-        "required_roles": ["builders", "validators", "publishers"]
-      }
+      "module_destination": "/opt/chapar/modulefiles"
     },
     "ubuntu-hpcsim": {
       "base_image": "ubuntu",
       "source_lock_category": "ubuntu_base_oci",
       "accepted_software_sets": ["hpcsim"],
       "allowed_targets": ["linux-x86_64-generic"],
-      "module_destination": "/opt/chapar/modulefiles",
-      "injection_requirements": {
-        "closure_deptypes": ["link", "run"],
-        "preserve_base_environment": true,
-        "prefix_policy": "build-time-absolute"
-      },
-      "runtime_requirements": {
-        "activation": "module-use-opt-in",
-        "require_module_command": true,
-        "required_roles": ["builders", "validators", "publishers"]
-      }
+      "module_destination": "/opt/chapar/modulefiles"
     }
   }
 }

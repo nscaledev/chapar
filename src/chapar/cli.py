@@ -29,7 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_catalog(subparsers)
     register_target(subparsers)
-    # marker:image-group
+    from chapar.image.cli import register as register_image
+
+    register_image(subparsers)
     # marker:validate-group
     # marker:cve-group
     return parser
