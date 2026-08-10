@@ -1,13 +1,13 @@
 # Chapar software catalog
 
-`spack.yaml` is the sole active root-spec and package-policy source. Its `specs:` list is intentionally empty: a later resolver owns effective selection and generated manifests.
+`spack.yaml` is the sole active root-spec and package-policy source. Set membership is selected by `CHAPAR_SOFTWARE_SET` and `CHAPAR_TARGET` conditions on its named root lists, so `spack -e envs/software` composes vlad, hpcsim, or the union directly; `chapar catalog list` renders any composition offline.
 
-Target-native, Spack, LLVM, and CUDA architecture values belong to the target registry. The only architecture metadata here is the `x86_64` selection tag for historical Intel roots.
+Target-native, Spack, LLVM, and CUDA architecture values belong to the target registry. The only architecture metadata here is the `x86_64` selection condition on the historical Intel roots.
 
 <!-- BEGIN GENERATED CATALOG INVENTORY -->
 ## Generated exact inventory
 
-This section is rendered from `spack.yaml` by `tests/catalog.py`; do not edit it manually.
+This section is rendered from `spack.yaml` by `chapar catalog readme`; do not edit it manually.
 
 The [frozen historical inventory](tests/fixtures/historical-root-inventory.json) preserves 90 exact historical root specs: 42 Vlad, 75 HPCSim, 48 exact HPCSim-not-Vlad entries, and 10 historical variant-difference packages. The target-neutral catalog composes 42 Vlad and 76 HPCSim roots (74 HPCSim roots on ARM), while its logical union has 81 roots because nine CUDA-architecture-only legacy duplicates collapse into shared roots.
 
