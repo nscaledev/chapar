@@ -3,62 +3,76 @@ set -euo pipefail
 
 usage() {
     cat <<'USAGE'
-Usage: ci/push-buildcache.sh --selection PATH --selection-sha256 SHA256 --contract PATH [--plan|--execute]
-       ci/push-buildcache.sh --selection PATH --selection-sha256 SHA256 --contract PATH --plan-migration SOURCE
+Usage: ci/push-buildcache.sh --release-dir PATH [--plan|--execute]
+       ci/push-buildcache.sh --release-dir PATH --plan-migration SOURCE
 
 --plan is the default and performs no filesystem or cache command.
---execute requires a digest-verified selection whose target contract permits publication.
+--execute pushes the release's installed roots to the site writable buildcache
+(${CHAPAR_BUILDCACHE_ROOT}/<target>) and requires PUBLISH_BUILDCACHE=true in
+the site settings. A release directory is a complete Spack environment
+(spack.yaml + spack.lock), so the push runs against it directly.
 Migration is intentionally plan-only: future execution must remain copy-only,
 non-overwriting, and non-deleting and requires separate operator approval.
 USAGE
 }
 
-SELECTION_PATH=""
-SELECTION_SHA256=""
-CONTRACT_PATH=""
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RELEASE_DIR=""
 MODE="plan"
 MIGRATION_SOURCE=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --selection) SELECTION_PATH="$2"; shift 2 ;;
-        --selection-sha256) SELECTION_SHA256="$2"; shift 2 ;;
-        --contract) CONTRACT_PATH="$2"; shift 2 ;;
+        --release-dir) [ "$#" -ge 2 ] || { echo "ERROR: --release-dir requires a value" >&2; exit 2; }; RELEASE_DIR="$2"; shift 2 ;;
         --plan) MODE="plan"; shift ;;
         --execute) MODE="execute"; shift ;;
-        --plan-migration) MODE="migration-plan"; MIGRATION_SOURCE="$2"; shift 2 ;;
+        --plan-migration) [ "$#" -ge 2 ] || { echo "ERROR: --plan-migration requires a value" >&2; exit 2; }; MODE="migration-plan"; MIGRATION_SOURCE="$2"; shift 2 ;;
+        --selection|--selection-sha256|--contract)
+            echo "ERROR: $1 was retired; bind to a release directory (see etc/chapar-site.env.example)" >&2; exit 2 ;;
         -h|--help) usage; exit 0 ;;
-        *) echo "ERROR: unknown option $1" >&2; usage >&2; exit 2 ;;
+        *) echo "ERROR: unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
-if [ -z "${SELECTION_PATH}" ] || [ -z "${SELECTION_SHA256}" ] || [ -z "${CONTRACT_PATH}" ]; then
-    usage >&2
-    exit 2
-fi
+[ -n "${RELEASE_DIR}" ] || { echo "ERROR: --release-dir is required" >&2; exit 2; }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHAPAR_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-SELECTION_HELPER="${CHAPAR_ROOT}/etc/chapar-selection.sh"
-SELECTION_EXPORTS="$("${SELECTION_HELPER}" exports "${SELECTION_PATH}" "${SELECTION_SHA256}" "${CONTRACT_PATH}")"
-eval "${SELECTION_EXPORTS}"
+# Verify the release and read its identity; refuses tampered bytes and the
+# mutable `current` pointer.
+IDENTITY="$(PYTHONPATH="${REPO_ROOT}/src" python3 -c '
+import sys
+from pathlib import Path
+from chapar.common.release import verify_release
+release = verify_release(Path(sys.argv[1]))
+print(f"{release.software_set}\t{release.target}\t{release.release_id}")
+' "${RELEASE_DIR}")" || exit 2
+IFS=$'\t' read -r SOFTWARE_SET TARGET RELEASE_ID <<<"${IDENTITY}"
 
-[ "${CHAPAR_PUBLISH_BUILDCACHE}" = "true" ] || { echo "ERROR: target contract forbids buildcache publication" >&2; exit 1; }
+export CHAPAR_SOFTWARE_SET="${SOFTWARE_SET}" CHAPAR_TARGET="${TARGET}"
+# shellcheck source=../etc/chapar-defaults.sh
+. "${REPO_ROOT}/etc/chapar-defaults.sh" || exit 2
+DESTINATION="${CHAPAR_BUILDCACHE_ROOT}/${TARGET}"
 
-printf 'selection: %s\n' "${SELECTION_SHA256}"
-printf 'tuple: %s/%s/%s\n' "${CHAPAR_DATACENTER}" "${CHAPAR_SOFTWARE_SET}" "${CHAPAR_TARGET}"
-printf 'writable buildcache: %s\n' "${CHAPAR_BUILDCACHE_DIR}"
+echo "release: ${RELEASE_DIR}"
+echo "tuple: ${SOFTWARE_SET}/${TARGET}/${RELEASE_ID}"
+echo "destination: ${DESTINATION}"
+echo "publish_buildcache: ${PUBLISH_BUILDCACHE}"
 
-if [ "${MODE}" = "migration-plan" ]; then
-    [ -n "${MIGRATION_SOURCE}" ] && [[ "${MIGRATION_SOURCE}" = /* ]] || { echo "ERROR: migration source must be absolute" >&2; exit 1; }
-    printf 'migration source: %s\n' "${MIGRATION_SOURCE}"
-    echo "migration policy: copy-only, non-overwriting, non-deleting; execution disabled"
-    exit 0
-fi
-
-if [ "${MODE}" = "plan" ]; then
-    echo "action: plan only; no cache command or filesystem mutation"
-    exit 0
-fi
-
-exec "${SELECTION_HELPER}" buildcache-push "${SELECTION_PATH}" "${SELECTION_SHA256}" "${CONTRACT_PATH}"
+case "${MODE}" in
+    plan)
+        echo "plan: spack -e ${RELEASE_DIR} buildcache push --unsigned --update-index --allow-missing file://${DESTINATION}"
+        echo "plan only: no filesystem or cache command was run"
+        ;;
+    execute)
+        [ "${PUBLISH_BUILDCACHE}" = true ] || { echo "ERROR: site settings forbid buildcache publication (PUBLISH_BUILDCACHE)" >&2; exit 1; }
+        command -v spack >/dev/null 2>&1 || { echo "ERROR: required command 'spack' not found" >&2; exit 1; }
+        mkdir -p "${DESTINATION}"
+        spack -e "${RELEASE_DIR}" buildcache push --unsigned --update-index --allow-missing "file://${DESTINATION}"
+        ;;
+    migration-plan)
+        [ -d "${MIGRATION_SOURCE}" ] || { echo "ERROR: migration source is not a directory" >&2; exit 1; }
+        RESOLVED="$(realpath -e -- "${MIGRATION_SOURCE}")" || { echo "ERROR: migration source cannot be resolved" >&2; exit 1; }
+        case "${RESOLVED}" in /resources/chapar|/resources/chapar/*) echo "ERROR: migration source overlaps protected legacy path" >&2; exit 1 ;; esac
+        echo "migration plan: cp -nR ${RESOLVED}/. ${DESTINATION}/"
+        echo "plan only: migration execution requires separate operator approval (use release.sh migrate-buildcache)"
+        ;;
+esac

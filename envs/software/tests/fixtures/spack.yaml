@@ -1,5 +1,0 @@
-spack:
-  specs:
-  - zlib-ng
-  concretizer:
-    unify: true
