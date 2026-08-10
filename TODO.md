@@ -1,37 +1,33 @@
 # Future work
 
-- Review and install a real non-secret `datacenters/<id>` desired-state
-  snapshot. No active contract exists today.
-- Complete every category and per-platform descriptor in
-  `containers/images/sources-lock.json`; its global status remains `blocked`.
-- With explicit platform approval, validate native concretization and
-  selection-bound versioned releases on Ubuntu 24.04 for each registry tuple.
-- With separate approval, validate Slurm placement, modules/integrity, GPU,
-  RDMA, MPI, NCCL, I/O, Enroot import/export, and `.sqsh` publication.
-- Resolve the runner storage contract that `storage-burnin` and `vast` require
-  (`VALIDATION_STORAGE_RESOLVED_TARGET`, `VALIDATION_STORAGE_POLICY_RESOLVED`,
-  the target/results roots, and an h5bench template). Nothing supplies it today,
-  so both suites SKIP on every node; their evaluators are covered by fixtures
-  only.
-- Run each capability suite on matching hardware once approved. Offline fixtures
-  prove the evaluators; they prove nothing about a GPU, a fabric, or a
-  filesystem.
-- Run `validation/tests/container-smoke.sbatch` once a sealed `.sqsh` exists for
-  a registry-approved tuple. It is the only test that uses Pyxis, and it produces
-  the `pyxis-smoke.txt` that the runtime receipt digests. The rootfs inventory
-  diff, the release-versus-base glibc comparison, and the in-image unshadowing
-  check in `containers/images/build-image.sh` likewise need a real
-  `enroot create` and have not run.
-- Decide whether the reserved `/opt/chapar` store namespace is bind-mounted onto
-  site storage on each builder. Injection copies store prefixes into the image at
-  their identical absolute path, and image planning rejects a symlinked store
-  component, so a symlink is not an option.
-- Decide CI design before adding any `.github/workflows/` file.
-- Evaluate AlmaLinux, CVMFS/Apptainer delivery, and additional architectures
-  only through new target-registry facts and reviewed data-center contracts.
-- Decide any legacy cache migration or retirement separately. This work grants
-  no approval to modify `/resources/chapar/vlad` or
-  `/resources/chapar/hpcsim`.
+Done: the repository is restructured onto the site-settings model — one
+catalog, per-machine `etc/chapar-site.env`, immutable releases, and
+release-bound consumers.
 
-Offline contract and selection behavior is verified; target-platform behavior
-not validated.
+- Decide CI automation. There is still no `.github/workflows/` file; the
+  offline gate (`ci/tests/software-specs-offline-gate.sh`) is runnable by hand
+  and is what any future workflow would call.
+- Complete `containers/images/sources-lock.json` before the first real image
+  build; its global status remains `blocked`. The NVIDIA hpc-benchmarks OCI
+  base needs an authenticated fetch to pin its digest, and `ubuntu_base_oci`
+  lacks an arm64 platform entry.
+- Run the outstanding operator platform gates on Ubuntu 24.04/Slurm:
+  - a first `release.sh build` smoke on a builder, including the padded-store
+    continuity check (`etc/chapar-install-tree.sh` must reproduce the store's
+    existing placeholder depth);
+  - a native concretization check of the catalog `when:` conditions on the
+    pinned Spack for each software set and registered target;
+  - a real image build plus `validation/tests/container-smoke.sbatch` once a
+    sealed `.sqsh` exists for an approved tuple;
+  - the hardware validation tiers (GPU, RDMA, MPI, NCCL, I/O) on matching
+    hardware — offline fixtures prove the evaluators, not the hardware.
+- Re-provision runners for the image roles when CI becomes real.
+  `register-vlad-image-runner.sh` was deleted with the site-contract
+  machinery; any replacement must derive its paths and policy from the site
+  settings.
+- Exercise lmod delivery. `CHAPAR_MODULE_SYSTEMS="tcl lmod"` is plumbed
+  through the site settings and release helper but has never produced a
+  consumed lmod tree.
+
+Offline behavior is verified by `make test`; target-platform behavior is not
+validated here.

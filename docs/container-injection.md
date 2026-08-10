@@ -1,28 +1,32 @@
 # Container injection contract
 
-How a selected Chapar release is delivered into a Pyxis/Enroot container without
-disturbing the software the base image already provides. Authority stays where it
-already is: `containers/images/containers.json` declares the injection and
-runtime requirements, `containers/images/targets.json` declares target facts, and
-a reviewed `datacenters/<id>` target contract declares paths and publication.
+How a built Chapar release is delivered into a Pyxis/Enroot container without
+disturbing the software the base image already provides. Authority stays where
+it already is: `containers/images/containers.json` declares the base images
+and their accepted software sets, `containers/images/targets.json` declares
+target facts, and the release's own `metadata.json` + `spack.lock` (produced
+under the site settings, `etc/README.md`) declare paths and delivery policy.
 
 ## Mechanism
 
-`containers/images/build-image.sh` copies each installed store prefix into the
-Enroot rootfs at the **identical absolute path** it was built at. No relocation
-happens, so nothing rewrites an RPATH, no `patchelf` runs, and the binaries in the
-image are the same bytes that were validated on the builder. This is what
-`containers.json` declares as `injection_requirements.prefix_policy:
-build-time-absolute`, with `closure_deptypes: ["link", "run"]` — build-only
-dependencies are excluded.
+`chapar image build` copies each installed store prefix into the Enroot rootfs
+at the **identical absolute path** it was built at. No relocation happens, so
+nothing rewrites an RPATH, no `patchelf` runs, and the binaries in the image
+are the same bytes that were validated on the builder. The injected set is the
+release's explicit roots plus their transitive `link`/`run` closure, read from
+the release-local `spack.lock` — build-only dependencies are excluded.
 
-Because the store root is at once a builder path and an in-image path, a target
-contract that selects a container must declare `install_tree` under the reserved
-`/opt/chapar` namespace. That is enforced in three places that must agree:
-`tools/chapar_config/paths.py` (`CONTAINER_PREFIX`), `envs/software/release.sh`,
-and `datacenters/schemas/target-contract.schema.json`. Builders must provide
-`/opt/chapar` as a **bind mount** onto real storage — image planning rejects a
-store root with a symlinked component.
+Because the store root is at once a builder path and an in-image path, a site
+that delivers containers should place its install tree
+(`CHAPAR_INSTALL_TREE_ROOT`) under the reserved `/opt/chapar` namespace —
+`containers.json` fixes every public container's module destination at
+`/opt/chapar/modulefiles`, and confining the store beside it keeps it from
+colliding with base-image content. The code enforces the parts that matter
+regardless of the chosen root: the store path comes from the release's
+recorded `install_tree` (never ambient state), a store root or prefix with a
+symlinked component is rejected, and any injection destination that already
+exists in the base image fails the build. Builders must provide the store
+namespace as a **bind mount** onto real storage, not a symlink.
 
 ## What must come from the host, and what must be baked
 
@@ -44,9 +48,10 @@ Host-provided; must never be baked into the image:
 
 Release-provided; injected from the store:
 
-- the CUDA **toolkit** (`cuda@13`), NCCL, and the accelerated transports: UCX with
-  `+mlx5_dv+dm+ib_hw_tm+cma`, libfabric `fabrics=mlx,rxm,verbs,shm`, Open MPI 5
-  with `fabrics=verbs,ucx,cma schedulers=slurm ^pmix@6`;
+- the CUDA **toolkit** (`cuda@13`), NCCL, and the accelerated transports: UCX
+  1.20 with `+cuda+gdrcopy+dc+rc+rdmacm+thread_multiple+ud+verbs`, libfabric 2
+  with `+cuda+gdrcopy fabrics=mlx,rxm,verbs` plus the `shm` intra-node
+  provider, Open MPI 5 with `fabrics=verbs,ucx schedulers=slurm ^pmix@6`;
 - `rdma-core` userspace — `libibverbs`, `librdmacm`, `libmlx5`. This is
   deliberate: `99-mellanox.sh` injects no MOFED userspace, and the uverbs uABI is
   version-negotiated (which is why the hook bind-mounts `abi_version`);
@@ -54,9 +59,10 @@ Release-provided; injected from the store:
 - `gcc-runtime`, so `libstdc++`, `libgomp` and `libgfortran` come from the
   release's own compiler rather than from whatever the base image ships.
 
-`build-image.sh` enforces the split rather than documenting it: the injected
-closure is parsed for `DT_NEEDED`, and any soname that is neither inside the
-closure nor on the host-provided list fails the build.
+`chapar image build` enforces the split rather than documenting it: the
+injected closure is parsed for `DT_NEEDED`, and any soname that is neither
+inside the closure nor on the host-provided list fails the build. The audit
+runs in `--plan-only` mode too, so it needs no builder.
 
 ## Non-interference rules
 
@@ -111,17 +117,17 @@ every registered target, which is NVIDIA plus ConnectX on both ISAs. It is not
 generic: `libfabric` carries `fabrics=mlx,rxm,verbs,shm` with `tcp` deliberately
 excluded so a silent TCP fallback cannot hide an RDMA misconfiguration. A target
 with no RDMA device would therefore have no working provider at all. Registering
-one means adding a real transport axis to the target registry and to
-`tools/chapar_config/render.py`, not relaxing the catalog.
+one means adding a real transport axis to the target registry and to the scope
+renderer (`src/chapar/target/scope.py`), not relaxing the catalog.
 
 ## Validation status
 
-Offline contract and selection behavior is verified; target-platform behavior not
-validated. The closure audit, modulefile content check, publication gate and
-registry/contract binding are exercised by
-`containers/images/tests/build-image-plan-test.sh` against synthetic releases.
-The rootfs inventory diff, the glibc comparison against a real base image, and the
-in-image unshadowing check require an actual `enroot create` and are deferred to
-an approved operator session, as is every command in
+Offline plan behavior is verified; target-platform behavior is not. The
+closure audit, modulefile content check, delivery-policy gate, and
+registry/release binding are exercised by the pytest suites under
+`tests/image` against synthetic releases (`make test`). The rootfs inventory
+diff, the glibc comparison against a real base image, and the in-image
+unshadowing check require an actual `enroot create` and are deferred to an
+approved operator session, as is every command in
 `validation/tests/container-smoke.sbatch`. `containers/images/sources-lock.json`
 is globally `blocked`, so no real image build is permitted today.
