@@ -18,7 +18,9 @@ from pathlib import Path
 
 import pytest
 
-TESTS = Path(__file__).resolve().parent
+from tests.conftest import REPO_ROOT
+
+TESTS = REPO_ROOT / "validation" / "tests"
 NCCL_CHECK = TESTS / "nccl-transport-check.sbatch"
 TRANSPORT = TESTS / "transport.sbatch"
 

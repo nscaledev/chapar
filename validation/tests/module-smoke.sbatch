@@ -8,15 +8,22 @@
 set -euo pipefail
 
 validation_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ -n "${ENV_NAME:-}" ] || [ -n "${MODULE_PATH:-}" ] || [ -n "${CHAPAR_MODULE_ROOT:-}" ]; then
-    echo "ERROR: ambient environment and module path overrides are obsolete" >&2
+repo_root="$(cd "${validation_dir}/.." && pwd)"
+if [ -n "${ENV_NAME:-}" ] || [ -n "${MODULE_PATH:-}" ]; then
+    echo "ERROR: ENV_NAME and MODULE_PATH are obsolete selection overrides" >&2
     exit 2
 fi
-selection="${CHAPAR_SELECTION:?CHAPAR_SELECTION is required}"
-selection_digest="${CHAPAR_SELECTION_DIGEST:?CHAPAR_SELECTION_DIGEST is required}"
-contract="${CHAPAR_TARGET_CONTRACT:?CHAPAR_TARGET_CONTRACT is required}"
-identity="$(python3 "$validation_dir/selection.py" shell --selection "$selection" --selection-digest "$selection_digest" --contract "$contract" --test module-smoke)"
-IFS=$'\t' read -r _datacenter _software_set _target module_path result_namespace _partition _constraint _account _qos <<< "$identity"
+# Builders have no uv; the chapar package runs stdlib-only from the checkout.
+chapar_validate() {
+    PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}" python3 -m chapar validate "$@"
+}
+release_dir="${CHAPAR_RELEASE_DIR:?CHAPAR_RELEASE_DIR is required}"
+# An exported RESULTS_ROOT (validation/run always sets one) is forwarded so a
+# manual invocation needs no site settings beyond the release directory.
+plan_args=(--release-dir "$release_dir" --test module-smoke)
+if [ -n "${RESULTS_ROOT:-}" ]; then plan_args+=(--results-root "$RESULTS_ROOT"); fi
+identity="$(chapar_validate plan --format shell "${plan_args[@]}")"
+IFS=$'\t' read -r _software_set _target _release_id _release_run_id module_path result_namespace <<< "$identity"
 run_id="${SLURM_JOB_ID:-$(date -u +%Y%m%dT%H%M%S)}"
 node="${SLURM_NODELIST:-$(hostname -s)}"
 RESULTS_DIR="${RESULTS_ROOT:-$result_namespace}/module-smoke/${run_id}/${node}"
@@ -59,7 +66,7 @@ module use "$module_path"
 echo "=== Module search path: $module_path ===" >&2
 while IFS=$'\t' read -r module_name check_cmd check_desc; do
     module_load_and_check "$module_name" "$check_cmd" "$check_desc"
-done < <(python3 "$validation_dir/selection.py" checks --selection "$selection" --selection-digest "$selection_digest" --contract "$contract" --test module-smoke)
+done < <(chapar_validate plan --format checks "${plan_args[@]}")
 
 # Close JSON
 results="${results%,}]"

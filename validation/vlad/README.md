@@ -1,7 +1,8 @@
 # vlad — HPC/AI Cluster Validation
 
 > **Tests have moved to `validation/tests/`.** Use `./validation/run <test>` to run them.
-> The `analyze/` directory is now at `validation/analyze/` (accessible via symlink).
+> The outlier analyzer is now `uv run chapar validate analyze`; the old
+> `analyze/` directory and its symlink were removed.
 
 vlad is a self-contained HPC/AI cluster validation environment. It contains
 benchmarks, profilers, GPU transport probes, and PyTorch+mpi4py framework-comm
@@ -18,7 +19,7 @@ The validation system uses a flat structure:
 
 - **Entry point** (`validation/run`): Bash script that discovers and runs tests
 - **Test scripts** (`validation/tests/<name>.sbatch`): Self-contained Slurm batch scripts with module loading and environment variable overrides
-- **Results** (`validation/results/`): Per-test, per-run output directories
+- **Results** (`${CHAPAR_VALIDATION_ROOT}/<set>/<target>/<release-id>/<run-id>/`): Per-suite, per-run output directories
 
 ## Test Suites
 
@@ -253,34 +254,23 @@ the loaded Spack environment.
 
 # Dry-run (print what would be executed without running)
 CHAPAR_DRY_RUN=1 ./validation/run node-smoke
-
-# Module overrides
-CHAPAR_MODULE_CUDA=cuda/12.8 ./validation/run node-smoke
-
-# Direct sbatch (backward compatible)
-sbatch validation/tests/node-smoke.sbatch
 ```
 
 ### Environment Configuration
 
-Module names and resources are configured through environment variables. Each
-software module has a `CHAPAR_MODULE_<NAME>` variable. Set it to override which
-module version loads:
-
-```bash
-# Use a different CUDA version
-CHAPAR_MODULE_CUDA=cuda/12.8 ./validation/run node-smoke
-
-# Use a different Open MPI
-CHAPAR_MODULE_OPENMPI=openmpi/5.0.7 ./validation/run ib-pairwise
-```
+Every run binds to one release directory (`--release-dir`, defaulting to the
+promoted `current` release), and the module tree and versions come from that
+release itself. `validation/run` submits jobs with a closed `--export` list —
+see `validation/README.md` — so ad-hoc module-version overrides do not pass
+through it.
 
 ### Adding a New Test
 
 1. Create `validation/tests/<name>.sbatch` using an existing test as a template
 2. Start with `# DESCRIPTION: One-line description of what this validates`
 3. Add `#SBATCH` directives for default resources
-4. Use `CHAPAR_MODULE_<NAME>` variables for module loads (with sensible defaults)
+4. Load modules from the release's own tree (`CHAPAR_RELEASE_DIR` is exported
+   to every job)
 5. Write output to `$RESULTS_DIR`
 
 ## External Tools
@@ -325,10 +315,10 @@ files, builds per-GPU and per-GPU-pair metric matrices, and flags any row with
 absolute deviation (MAD) across rows.
 
 ```bash
-python3 validation/analyze/outliers.py \
+uv run chapar validate analyze \
   --suite ib-pairwise \
   --threshold 2.0 \
-  --results-dir validation/results/ib-pairwise
+  --results-dir "$CHAPAR_VALIDATION_ROOT/<set>/<target>/<release-id>/<run-id>/ib-pairwise"
 ```
 
 The analyzer reports **which GPU index on which node** is deviant, so a

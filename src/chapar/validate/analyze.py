@@ -1,40 +1,27 @@
-#!/usr/bin/env python3
 """MAD-based outlier detector for HPC/AI cluster validation results.
 
 Public CLI:
-    python3 outliers.py --suite <name> --threshold 2.0 --results-dir <path>
+    chapar validate analyze --suite <name> --threshold 2.0 --results-dir <path>
 
 Supported suites: node-smoke, ib-pairwise, mpi-collective, hpc-challenge,
-io, profiling, gpu-stress, transport, frameworks.
+io, profiling, gpu-stress, transport, frameworks. Stdlib only.
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
-import io
 import json
 import os
 import re
+import statistics
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Final
 
-try:
-    import numpy as np  # type: ignore
 
-    def _median(values: List[float]) -> float:
-        return float(np.median(values))
-
-    _HAS_NUMPY = True
-except ImportError:
-    import statistics
-
-    def _median(values: List[float]) -> float:
-        return statistics.median(values)
-
-    _HAS_NUMPY = False
+def _median(values: list[float]) -> float:
+    return statistics.median(values)
 
 
 # ── Data model ──────────────────────────────────────────────────────────────
@@ -48,9 +35,9 @@ class Metric:
     metric_name: str
     value: float
     unit: str
-    gpu_index: Optional[int] = None
-    peer_node: Optional[str] = None
-    peer_gpu_index: Optional[int] = None
+    gpu_index: int | None = None
+    peer_node: str | None = None
+    peer_gpu_index: int | None = None
 
 
 @dataclass
@@ -64,9 +51,9 @@ class Flag:
     zscore: float
     median: float
     mad: float
-    gpu_index: Optional[int] = None
-    peer_node: Optional[str] = None
-    peer_gpu_index: Optional[int] = None
+    gpu_index: int | None = None
+    peer_node: str | None = None
+    peer_gpu_index: int | None = None
 
 
 # ── Aggregation ─────────────────────────────────────────────────────────────
@@ -79,7 +66,7 @@ def _robust_zscore(value: float, median: float, mad: float) -> float:
     return 0.6745 * (value - median) / mad
 
 
-def compute_flags(metrics: List[Metric], threshold: float = 2.0) -> Tuple[List[Flag], Dict]:
+def compute_flags(metrics: list[Metric], threshold: float = 2.0) -> tuple[list[Flag], dict[str, float | int]]:
     """Aggregate metrics by (metric_name, unit) and flag outliers.
 
     For each group, compute median and MAD (median absolute deviation),
@@ -87,18 +74,17 @@ def compute_flags(metrics: List[Metric], threshold: float = 2.0) -> Tuple[List[F
 
     Returns (flags, summary_dict).
     """
-    # Group by (metric_name, unit)
-    groups: Dict[Tuple[str, str], List[Metric]] = {}
+    groups: dict[tuple[str, str], list[Metric]] = {}
     for m in metrics:
         key = (m.metric_name, m.unit)
         groups.setdefault(key, []).append(m)
 
-    all_flags: List[Flag] = []
-    nodes_seen: set = set()
+    all_flags: list[Flag] = []
+    nodes_seen: set[str] = set()
     for m in metrics:
         nodes_seen.add(m.node)
 
-    for (metric_name, unit), group in sorted(groups.items()):
+    for (_metric_name, _unit), group in sorted(groups.items()):
         values = [m.value for m in group]
         median = _median(values)
         abs_devs = [abs(v - median) for v in values]
@@ -122,7 +108,7 @@ def compute_flags(metrics: List[Metric], threshold: float = 2.0) -> Tuple[List[F
                     )
                 )
 
-    summary = {
+    summary: dict[str, float | int] = {
         "nodes_total": len(nodes_seen),
         "flags_total": len(all_flags),
         "threshold": threshold,
@@ -131,11 +117,11 @@ def compute_flags(metrics: List[Metric], threshold: float = 2.0) -> Tuple[List[F
     return all_flags, summary
 
 
-def flags_to_dicts(flags: List[Flag]) -> List[dict]:
+def flags_to_dicts(flags: list[Flag]) -> list[dict[str, object]]:
     """Convert Flag objects to JSON-serializable dicts."""
-    result = []
+    result: list[dict[str, object]] = []
     for f in flags:
-        d = {
+        d: dict[str, object] = {
             "node": f.node,
             "metric_name": f.metric_name,
             "value": f.value,
@@ -157,9 +143,9 @@ def flags_to_dicts(flags: List[Flag]) -> List[dict]:
 # ── Per-suite parsers ───────────────────────────────────────────────────────
 
 
-def _extract_osu_metrics(path: str, node: str) -> List[Metric]:
+def _extract_osu_metrics(path: str, node: str) -> list[Metric]:
     """Parse OSU benchmark output: lines like '# Size  Bandwidth (MB/s)'."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     with open(path) as fh:
         for line in fh:
             line = line.strip()
@@ -168,7 +154,7 @@ def _extract_osu_metrics(path: str, node: str) -> List[Metric]:
             parts = line.split()
             if len(parts) >= 2:
                 try:
-                    size = int(parts[0])
+                    int(parts[0])  # first column must be a message size
                     bw = float(parts[1])
                 except (ValueError, IndexError):
                     continue
@@ -183,9 +169,9 @@ def _extract_osu_metrics(path: str, node: str) -> List[Metric]:
     return metrics
 
 
-def _extract_ior_metrics(path: str, node: str) -> List[Metric]:
+def _extract_ior_metrics(path: str, node: str) -> list[Metric]:
     """Parse IOR CSV (-O) output: access,block,xfer,open,wr/rd,close columns."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     with open(path) as fh:
         reader = csv.DictReader(fh)
         for row in reader:
@@ -206,9 +192,9 @@ def _extract_ior_metrics(path: str, node: str) -> List[Metric]:
     return metrics
 
 
-def _extract_nccl_metrics(path: str, node: str) -> List[Metric]:
+def _extract_nccl_metrics(path: str, node: str) -> list[Metric]:
     """Parse nccl-tests output: header '# size  count  time  algbw  busbw'."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     with open(path) as fh:
         for line in fh:
             line = line.strip()
@@ -217,7 +203,6 @@ def _extract_nccl_metrics(path: str, node: str) -> List[Metric]:
             parts = line.split()
             if len(parts) >= 5:
                 try:
-                    size = parts[0]
                     algbw = float(parts[3])
                 except (ValueError, IndexError):
                     continue
@@ -232,16 +217,16 @@ def _extract_nccl_metrics(path: str, node: str) -> List[Metric]:
     return metrics
 
 
-def _extract_nvbandwidth_p2p(path: str, node: str) -> List[Metric]:
+def _extract_nvbandwidth_p2p(path: str, node: str) -> list[Metric]:
     """Parse nvbandwidth p2p matrix CSV with row/col GPU indices."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     with open(path) as fh:
         reader = csv.reader(fh)
         header = next(reader, [])
         # Header: first col is row label, remaining are col GPU indices
         if len(header) < 2:
             return metrics
-        col_gpus: List[int] = []
+        col_gpus: list[int] = []
         for h in header[1:]:
             try:
                 col_gpus.append(int(h.strip()))
@@ -275,13 +260,13 @@ def _extract_nvbandwidth_p2p(path: str, node: str) -> List[Metric]:
     return metrics
 
 
-def _extract_nvbandwidth_memcpy(path: str, node: str) -> List[Metric]:
+def _extract_nvbandwidth_memcpy(path: str, node: str) -> list[Metric]:
     """Parse nvbandwidth memcpy CSV."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     with open(path) as fh:
         reader = csv.reader(fh)
         header = next(reader, [])
-        gpu_indices: List[int] = []
+        gpu_indices: list[int] = []
         for h in header[1:]:
             try:
                 gpu_indices.append(int(h.strip()))
@@ -291,7 +276,6 @@ def _extract_nvbandwidth_memcpy(path: str, node: str) -> List[Metric]:
         for row in reader:
             if not row:
                 continue
-            direction = row[0].strip() if row else "unknown"
             for ci, val_str in enumerate(row[1:]):
                 if ci >= len(gpu_indices):
                     break
@@ -311,9 +295,9 @@ def _extract_nvbandwidth_memcpy(path: str, node: str) -> List[Metric]:
     return metrics
 
 
-def _extract_likwid_metrics(path: str, node: str) -> List[Metric]:
+def _extract_likwid_metrics(path: str, node: str) -> list[Metric]:
     """Parse likwid-perfctr -O CSV."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     with open(path) as fh:
         reader = csv.reader(fh)
         header = next(reader, [])
@@ -341,9 +325,9 @@ def _extract_likwid_metrics(path: str, node: str) -> List[Metric]:
     return metrics
 
 
-def _extract_hpl_metrics(path: str, node: str) -> List[Metric]:
+def _extract_hpl_metrics(path: str, node: str) -> list[Metric]:
     """Parse HPL stdout: grep 'T/V' for effective Gflops."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     tv_re = re.compile(r"T/V\s+\S+\s+\S+\s+\S+\s+\S+\s+(\S+)")
     wr_re = re.compile(r"WR00C2R2\s+\S+\s+(\S+)")
     with open(path) as fh:
@@ -379,9 +363,9 @@ def _extract_hpl_metrics(path: str, node: str) -> List[Metric]:
     return metrics
 
 
-def _extract_hpcg_metrics(path: str, node: str) -> List[Metric]:
+def _extract_hpcg_metrics(path: str, node: str) -> list[Metric]:
     """Parse HPCG stdout: grep 'VALID' for rating."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     valid_re = re.compile(r"VALID\s+\S+\s+(\S+)")
     with open(path) as fh:
         for line in fh:
@@ -402,9 +386,9 @@ def _extract_hpcg_metrics(path: str, node: str) -> List[Metric]:
     return metrics
 
 
-def _extract_cuda_memtest(path: str, node: str, gpu_index: int) -> List[Metric]:
+def _extract_cuda_memtest(path: str, node: str, gpu_index: int) -> list[Metric]:
     """Parse cuda-memtest per-GPU log: grep ERROR or PASS."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     pass_count = 0
     error_count = 0
     with open(path) as fh:
@@ -434,27 +418,25 @@ def _extract_cuda_memtest(path: str, node: str, gpu_index: int) -> List[Metric]:
     return metrics
 
 
-def _extract_transport_info(path: str, node: str, metric_name: str) -> List[Metric]:
+def _extract_transport_info(path: str, node: str, metric_name: str) -> list[Metric]:
     """Parse transport info files (ucx_info, ompi_info, fi_info): count transport lines."""
-    metrics: List[Metric] = []
     line_count = 0
     with open(path) as fh:
-        for line in fh:
+        for _line in fh:
             line_count += 1
-    metrics.append(
+    return [
         Metric(
             node=node,
             metric_name=metric_name,
             value=float(line_count),
             unit="lines",
         )
-    )
-    return metrics
+    ]
 
 
-def _extract_torch_distributed(path: str, node: str) -> List[Metric]:
+def _extract_torch_distributed(path: str, node: str) -> list[Metric]:
     """Parse torch.distributed framework-comm output: parse wall_time_s from JSON."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     with open(path) as fh:
         for line in fh:
             line = line.strip()
@@ -483,7 +465,7 @@ def _extract_torch_distributed(path: str, node: str) -> List[Metric]:
 
 # ── Suite dispatcher ────────────────────────────────────────────────────────
 
-SUITES = [
+SUITES: Final = (
     "node-smoke",
     "ib-pairwise",
     "mpi-collective",
@@ -493,12 +475,12 @@ SUITES = [
     "gpu-stress",
     "transport",
     "frameworks",
-]
+)
 
 
-def _parse_node_smoke(results_dir: str) -> List[Metric]:
+def _parse_node_smoke(results_dir: str) -> list[Metric]:
     """Parse per-node smoke test results."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     for node_dir in sorted(Path(results_dir).iterdir()):
         if not node_dir.is_dir():
             continue
@@ -524,9 +506,9 @@ def _parse_node_smoke(results_dir: str) -> List[Metric]:
     return metrics
 
 
-def _parse_ib_pairwise(results_dir: str) -> List[Metric]:
+def _parse_ib_pairwise(results_dir: str) -> list[Metric]:
     """Parse InfiniBand pairwise results."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     for run_dir in sorted(Path(results_dir).iterdir()):
         if not run_dir.is_dir():
             continue
@@ -547,7 +529,7 @@ def _parse_ib_pairwise(results_dir: str) -> List[Metric]:
     return metrics
 
 
-def _extract_ib_bw(path: str, node: str, metrics: List[Metric]) -> None:
+def _extract_ib_bw(path: str, node: str, metrics: list[Metric]) -> None:
     """Extract bandwidth from ib_write_bw output."""
     with open(path) as fh:
         for line in fh:
@@ -568,9 +550,9 @@ def _extract_ib_bw(path: str, node: str, metrics: List[Metric]) -> None:
                 break
 
 
-def _parse_mpi_collective(results_dir: str) -> List[Metric]:
+def _parse_mpi_collective(results_dir: str) -> list[Metric]:
     """Parse MPI collective benchmark results."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     for run_dir in sorted(Path(results_dir).iterdir()):
         if not run_dir.is_dir():
             continue
@@ -591,14 +573,14 @@ def _parse_mpi_collective(results_dir: str) -> List[Metric]:
     return metrics
 
 
-def _extract_imb(path: str, node: str, metrics: List[Metric]) -> None:
+def _extract_imb(path: str, node: str, metrics: list[Metric]) -> None:
     """Extract IMB benchmark times from stdout."""
     with open(path) as fh:
         for line in fh:
             parts = line.split()
             if len(parts) >= 2:
                 try:
-                    size = int(parts[0])
+                    int(parts[0])  # first column must be a message size
                     t = float(parts[1])
                 except (ValueError, IndexError):
                     continue
@@ -612,9 +594,9 @@ def _extract_imb(path: str, node: str, metrics: List[Metric]) -> None:
                 )
 
 
-def _parse_hpc_challenge(results_dir: str) -> List[Metric]:
+def _parse_hpc_challenge(results_dir: str) -> list[Metric]:
     """Parse HPC challenge (HPL, HPCG, STREAM, HPL-AI) results."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     for run_dir in sorted(Path(results_dir).iterdir()):
         if not run_dir.is_dir():
             continue
@@ -638,7 +620,7 @@ def _parse_hpc_challenge(results_dir: str) -> List[Metric]:
 
 
 def _extract_stream_gflops(
-    path: str, node: str, prefix: str, metrics: List[Metric]
+    path: str, node: str, prefix: str, metrics: list[Metric]
 ) -> None:
     """Extract Gflops or GB/s from STREAM/HPL-AI output."""
     with open(path) as fh:
@@ -660,9 +642,9 @@ def _extract_stream_gflops(
                 )
 
 
-def _parse_io(results_dir: str) -> List[Metric]:
+def _parse_io(results_dir: str) -> list[Metric]:
     """Parse I/O benchmark results."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     for run_dir in sorted(Path(results_dir).iterdir()):
         if not run_dir.is_dir():
             continue
@@ -679,16 +661,16 @@ def _parse_io(results_dir: str) -> List[Metric]:
     return metrics
 
 
-def _parse_profiling(results_dir: str) -> List[Metric]:
+def _parse_profiling(results_dir: str) -> list[Metric]:
     """Profiling suite is excluded from outlier analysis.
     Profiler overhead and trace sizes are not hardware-deviation signals.
     """
     return []
 
 
-def _parse_gpu_stress(results_dir: str) -> List[Metric]:
+def _parse_gpu_stress(results_dir: str) -> list[Metric]:
     """Parse GPU stress test results."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     for node_dir in sorted(Path(results_dir).iterdir()):
         if not node_dir.is_dir():
             continue
@@ -702,9 +684,9 @@ def _parse_gpu_stress(results_dir: str) -> List[Metric]:
     return metrics
 
 
-def _parse_transport(results_dir: str) -> List[Metric]:
+def _parse_transport(results_dir: str) -> list[Metric]:
     """Parse transport-layer probe results."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     for run_dir in sorted(Path(results_dir).iterdir()):
         if not run_dir.is_dir():
             continue
@@ -737,9 +719,9 @@ def _parse_transport(results_dir: str) -> List[Metric]:
     return metrics
 
 
-def _parse_frameworks(results_dir: str) -> List[Metric]:
+def _parse_frameworks(results_dir: str) -> list[Metric]:
     """Parse framework-comm validation results."""
-    metrics: List[Metric] = []
+    metrics: list[Metric] = []
     for run_dir in sorted(Path(results_dir).iterdir()):
         if not run_dir.is_dir():
             continue
@@ -751,7 +733,7 @@ def _parse_frameworks(results_dir: str) -> List[Metric]:
     return metrics
 
 
-_PARSERS = {
+_PARSERS: Final = {
     "node-smoke": _parse_node_smoke,
     "ib-pairwise": _parse_ib_pairwise,
     "mpi-collective": _parse_mpi_collective,
@@ -764,45 +746,17 @@ _PARSERS = {
 }
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────────
-
-
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description="MAD-based outlier detector for HPC/AI cluster validation",
-    )
-    p.add_argument(
-        "--suite",
-        required=True,
-        choices=SUITES,
-        help="Validation suite to analyze",
-    )
-    p.add_argument(
-        "--threshold",
-        type=float,
-        default=2.0,
-        help="Robust z-score threshold (default: 2.0)",
-    )
-    p.add_argument(
-        "--results-dir",
-        required=True,
-        help="Path to per-suite results directory",
-    )
-    p.add_argument(
-        "--prometheus",
-        action="store_true",
-        help="Output metrics in Prometheus exposition format",
-    )
-    return p
+# ── Output ──────────────────────────────────────────────────────────────────
 
 
 def output_prometheus(
-    flags: List[Flag],
-    args: argparse.Namespace,
+    flags: list[Flag],
+    suite: str,
+    threshold: float,
     nodes_total: int = 0,
     groups_analyzed: int = 0,
 ) -> None:
-    lines: List[str] = []
+    lines: list[str] = []
 
     lines.append("# HELP chapar_outlier_zscore Robust z-score of flagged metric (|z| > threshold = outlier)")
     lines.append("# TYPE chapar_outlier_zscore gauge")
@@ -814,70 +768,65 @@ def output_prometheus(
             labels += f',peer_node="{f.peer_node}"'
         if f.peer_gpu_index is not None:
             labels += f',peer_gpu="{f.peer_gpu_index}"'
-        lines.append(f'chapar_outlier_zscore{{{labels}}} {f.zscore}')
+        lines.append(f"chapar_outlier_zscore{{{labels}}} {f.zscore}")
 
     lines.append("")
     lines.append("# HELP chapar_outlier_count Total number of flagged outliers")
     lines.append("# TYPE chapar_outlier_count gauge")
-    lines.append(f'chapar_outlier_count{{suite="{args.suite}",threshold="{args.threshold}"}} {len(flags)}')
+    lines.append(f'chapar_outlier_count{{suite="{suite}",threshold="{threshold}"}} {len(flags)}')
 
     lines.append("# HELP chapar_outlier_nodes_total Number of nodes analyzed")
     lines.append("# TYPE chapar_outlier_nodes_total gauge")
-    lines.append(f'chapar_outlier_nodes_total{{suite="{args.suite}"}} {nodes_total}')
+    lines.append(f'chapar_outlier_nodes_total{{suite="{suite}"}} {nodes_total}')
 
     lines.append("# HELP chapar_outlier_groups_analyzed Number of metric groups analyzed")
     lines.append("# TYPE chapar_outlier_groups_analyzed gauge")
-    lines.append(f'chapar_outlier_groups_analyzed{{suite="{args.suite}"}} {groups_analyzed}')
+    lines.append(f'chapar_outlier_groups_analyzed{{suite="{suite}"}} {groups_analyzed}')
 
-    sys.stdout.write("\n".join(lines))
-    sys.stdout.write("\n")
+    _ = sys.stdout.write("\n".join(lines))
+    _ = sys.stdout.write("\n")
 
 
-def main(argv: Optional[List[str]] = None) -> None:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def analyze(suite: str, threshold: float, results_dir: str, prometheus: bool = False) -> int:
+    """Analyze one suite's results directory and print the report.
 
-    results_dir = args.results_dir
+    A missing results directory is "no results yet", not an analysis failure:
+    it reports on stderr and still exits 0 so a collector can run the analyzer
+    unconditionally after every suite.
+    """
     if not os.path.isdir(results_dir):
         print(f"ERROR: results directory not found: {results_dir}", file=sys.stderr)
-        sys.exit(0)
+        return 0
 
-    parser_fn = _PARSERS[args.suite]
-    metrics = parser_fn(results_dir)
+    metrics = _PARSERS[suite](results_dir)
 
     if not metrics:
-        if args.prometheus:
-            output_prometheus([], args)
+        if prometheus:
+            output_prometheus([], suite, threshold)
         else:
-            output = {
+            output: dict[str, object] = {
                 "flags": [],
                 "summary": {
                     "nodes_total": 0,
                     "flags_total": 0,
-                    "threshold": args.threshold,
+                    "threshold": threshold,
                     "groups_analyzed": 0,
                     "warning": "no metrics extracted from results directory",
                 },
             }
             json.dump(output, sys.stdout, indent=2)
-            sys.stdout.write("\n")
+            _ = sys.stdout.write("\n")
     else:
-        flags, summary = compute_flags(metrics, threshold=args.threshold)
-        if args.prometheus:
+        flags, summary = compute_flags(metrics, threshold=threshold)
+        if prometheus:
             output_prometheus(
                 flags,
-                args,
-                nodes_total=summary.get("nodes_total", 0),
-                groups_analyzed=summary.get("groups_analyzed", 0),
+                suite,
+                threshold,
+                nodes_total=int(summary.get("nodes_total", 0)),
+                groups_analyzed=int(summary.get("groups_analyzed", 0)),
             )
         else:
-            output = {
-                "flags": flags_to_dicts(flags),
-                "summary": summary,
-            }
-            json.dump(output, sys.stdout, indent=2)
-            sys.stdout.write("\n")
-
-
-if __name__ == "__main__":
-    main()
+            json.dump({"flags": flags_to_dicts(flags), "summary": summary}, sys.stdout, indent=2)
+            _ = sys.stdout.write("\n")
+    return 0

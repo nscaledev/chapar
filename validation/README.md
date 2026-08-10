@@ -1,14 +1,57 @@
 # Validation
 
-This directory contains runtime validation tests for HPC/AI clusters running Chapar-built software environments. Tests validate hardware, interconnects, MPI/NCCL transports, I/O, profilers, and ML frameworks on real cluster hardware.
+Runtime validation suites for HPC/AI clusters running Chapar-built software.
+Suites validate hardware, interconnects, MPI/NCCL transports, I/O, profilers,
+and ML frameworks on real cluster hardware, and every run binds to one
+immutable release directory. The operator guide is `docs/validation.md`; the
+result contract and fixture architecture are in `validation/ARCHITECTURE.md`.
 
-> **`validation/ARCHITECTURE.md` is authoritative where this file disagrees with
-> it.** Parts of this document predate selection-bound validation and are still
-> being corrected. In particular: every suite requires a verified
-> `--selection`/`--selection-digest`/`--contract`, results are written under the
-> contract's `validation_work` root rather than `validation/results/`, and the
-> `CHAPAR_MODULE_<NAME>` and `CHAPAR_PARTITION` overrides described below are not
-> passed through by `validation/run` — its `--export` list is closed.
+## Quick start
+
+```bash
+# List all available tests
+./validation/run list
+
+# Run a single test against the promoted release
+./validation/run node-smoke
+
+# Bind to an explicit release instead of the current pointer
+./validation/run --release-dir "$CHAPAR_RELEASE_ROOT/vlad/linux-x86_64-v4/20260809a" node-smoke
+
+# Run everything; print plans only
+./validation/run --release-dir <release> all
+CHAPAR_DRY_RUN=1 ./validation/run --release-dir <release> all
+```
+
+Without `--release-dir` the promoted release
+`${CHAPAR_RELEASE_ROOT}/${CHAPAR_SOFTWARE_SET}/${CHAPAR_TARGET}/current` is
+used; the pointer is resolved to the concrete immutable release before
+anything is planned or submitted. Tests submit Slurm batch jobs by default
+(placement from `CHAPAR_SLURM_*`); inside an existing allocation they run
+inline.
+
+## What reaches a job
+
+`validation/run` submits with a **closed** `--export` list. A job receives:
+
+- `CHAPAR_RELEASE_DIR` — the resolved immutable release directory;
+- `RESULTS_ROOT` — the suite's results directory for this run;
+- `CHAPAR_VALIDATION_ROOT` — the site validation root;
+- `CHAPAR_CONTAINER_BASE` and `CHAPAR_CONTAINER_OUTPUT_ROOT`, when set —
+  container facts for `container-smoke`;
+- `CHAPAR_CONTAINER_IMAGE` + `CHAPAR_CONTAINER_IMAGE_SHA256`, when both are
+  set — the sealed `.sqsh` under test (`container-smoke` verifies the path
+  and SKIPs when absent);
+- only with `VALIDATION_TEST_MODE=1`: the allowlisted `VALIDATION_TEST_*`
+  fixture variables.
+
+Nothing else in the caller's environment reaches a submitted job — in
+particular there are no `CHAPAR_MODULE_<NAME>` version overrides: the module
+tree and versions come from the release itself. Knobs read by the suites
+directly (`CHAPAR_NODES`, `CHAPAR_TIME`, `CHAPAR_KEEP_MODULES=1`,
+`MPI_RDMA_BYTES`, `MPI_RDMA_ITERS`, `PROFILER`, `IO_TEST_DIR`, …) therefore
+take effect only for inline runs inside an existing allocation, or when a
+suite is launched with `sbatch` directly.
 
 ## Suite results and fixtures
 
@@ -16,8 +59,9 @@ Ten suites are bound to the shared result contract in `validation/lib`
 (`container-smoke`, `cpu-platform`, `gpu-topology`, `node-admission`,
 `nvlink-p2p`, `rdma-link-check`, `rocev2-pairwise`, `slurm-placement`,
 `storage-burnin`, `vast`). They emit `summary.json`, `suite.prom` and a
-schema-checked `suite-manifest.json`, and their exit code follows the verdict:
-`PASS`/`WARN` 0, `FAIL` 1, `SKIP` 77.
+schema-checked `suite-manifest.json` carrying the release identity block
+(`{software_set, target, release_id, run_id, release_lock_sha256}`), and
+their exit code follows the verdict: `PASS`/`WARN` 0, `FAIL` 1, `SKIP` 77.
 
 A local run produces `manual` provenance and is never CI-authoritative; a runner
 must supply `VALIDATION_RUN_ID` and a timezone-aware `VALIDATION_RUN_ISSUED_AT`.
@@ -27,27 +71,12 @@ Every hardware suite runs offline against recorded observations under
 expectations are tracked in `validation/config/capability.yaml`. See
 `ARCHITECTURE.md` for the contract and the fixture-injection rules.
 
-## Quick Start
+## Available tests
 
-```bash
-# List all available tests
-./validation/run list
+`./validation/run list` is authoritative; the tables below are reference for
+the long-standing suites.
 
-# Run a single test
-./validation/run node-smoke
-
-# Run all tests
-./validation/run all
-
-# See options
-./validation/run --help
-```
-
-Tests submit Slurm batch jobs by default. If already inside a Slurm allocation, they run inline.
-
-## Available Tests
-
-### Hardware Validation
+### Hardware validation
 
 | Test | Description | Nodes | GPUs | Time |
 |------|-------------|-------|------|------|
@@ -55,7 +84,7 @@ Tests submit Slurm batch jobs by default. If already inside a Slurm allocation, 
 | `gpu-stress` | Per-GPU cuda-memtest and optional gpu-burn (8h) | 1 | 1 | 8h |
 | `hpc-challenge` | HPL, HPCG, STREAM, BabelStream benchmarks | 1 | — | 4h |
 
-### Node Health Validation
+### Node health validation
 
 | Test | Description | Nodes | GPUs | Time |
 |------|-------------|-------|------|------|
@@ -67,7 +96,7 @@ These tests emit machine-readable verdicts (`PASS`/`WARN`/`FAIL`/`SKIP`) as JSON
 plus Prometheus exposition files (`.prom`) suitable for a node_exporter
 textfile collector. They exit `77` when the required hardware is absent.
 
-### Interconnect Validation
+### Interconnect validation
 
 | Test | Description | Nodes | GPUs | Time |
 |------|-------------|-------|------|------|
@@ -75,7 +104,7 @@ textfile collector. They exit `77` when the required hardware is absent.
 | `mpi-collective` | IMB-MPI1 (Allreduce/Alltoall/Bcast), OSU collectives, NCCL all_reduce | 4 | 1 | 1h |
 | `transport` | UCX device/transport listing, Open MPI MCA params, libfabric providers, NCCL transport probe | 2 | 1 | 30m |
 
-### MPI/RDMA Validation
+### MPI/RDMA validation
 
 | Test | Description | Nodes | GPUs | Time |
 |------|-------------|-------|------|------|
@@ -84,153 +113,52 @@ textfile collector. They exit `77` when the required hardware is absent.
 | `intelmpi-cpu` | Intel MPI CPU Sendrecv ring test | 2 | — | 10m |
 | `intelmpi-gpu` | Intel MPI GPU (CUDA-aware) Sendrecv ring test | 2 | 1 | 10m |
 
-The MPI RDMA tests verify end-to-end RDMA data integrity across nodes. The GPU variants additionally validate CUDA-aware MPI transport.
+The MPI RDMA tests verify end-to-end RDMA data integrity across nodes. The GPU
+variants additionally validate CUDA-aware MPI transport.
 
-### I/O Validation
+### I/O validation
 
 | Test | Description | Nodes | GPUs | Time |
 |------|-------------|-------|------|------|
 | `io` | POSIX/MPI-IO IOR, mdtest metadata, h5bench HDF5, fio | 4 | — | 1h |
 
-### Software Stack Validation
+### Software stack validation
 
 | Test | Description | Nodes | GPUs | Time |
 |------|-------------|-------|------|------|
 | `profiling` | Validates profiler interposition (caliper, darshan, mpip, ipm, extrae, hpctoolkit, tau, scorep, scalasca, likwid) | 2 | — | 30m |
 | `frameworks` | PyTorch distributed all_reduce with MPI backend + mpi4py | 2 | 1 | 30m |
 
-## Environment Configuration
-
-Tests use sensible defaults for module versions and resource requests. Override
-any setting via environment variables. The node health tests additionally read
-cluster-specific expectations (IB link manifest, expected NCCL transport) from
-`validation/config/network.yaml`; edit that file to match your cluster.
-
-### Module Overrides
-
-Each software module has a `CHAPAR_MODULE_<NAME>` variable. Set it to override which module version loads:
-
-```bash
-# Use a different CUDA version
-CHAPAR_MODULE_CUDA=cuda/12.8 ./validation/run node-smoke
-
-# Use a different Open MPI
-CHAPAR_MODULE_OPENMPI=openmpi/5.0.7 ./validation/run ib-pairwise
-```
-
-Complete list of module variables:
-
-| Variable | Default | Used By |
-|----------|---------|---------|
-| `CHAPAR_MODULE_CUDA` | cuda/13 | GPU tests |
-| `CHAPAR_MODULE_OPENMPI` | openmpi/5 | MPI tests |
-| `CHAPAR_MODULE_UCX` | ucx/1.20.1 | transport |
-| `CHAPAR_MODULE_NCCL` | nccl/2.29.7-1 | mpi-collective, transport |
-| `CHAPAR_MODULE_NCCL_TESTS` | nccl-tests | mpi-collective, transport |
-| `CHAPAR_MODULE_LIBFABRIC` | libfabric/2 | transport |
-| `CHAPAR_MODULE_HWLOC` | hwloc | node-smoke |
-| `CHAPAR_MODULE_LIKWID` | likwid | node-smoke |
-| `CHAPAR_MODULE_PAPI` | papi | node-smoke |
-| `CHAPAR_MODULE_NVBANDWIDTH` | nvbandwidth | node-smoke |
-| `CHAPAR_MODULE_CUDA_MEMTEST` | cuda-memtest | node-smoke, gpu-stress |
-| `CHAPAR_MODULE_OSU_MICRO_BENCHMARKS` | osu-micro-benchmarks | ib-pairwise, mpi-collective |
-| `CHAPAR_MODULE_INTEL_MPI_BENCHMARKS` | intel-mpi-benchmarks | mpi-collective |
-| `CHAPAR_MODULE_QPERF` | qperf | ib-pairwise |
-| `CHAPAR_MODULE_IOR` | ior | io |
-| `CHAPAR_MODULE_MDTEST` | mdtest | io |
-| `CHAPAR_MODULE_H5BENCH` | h5bench | io |
-| `CHAPAR_MODULE_FIO` | fio | io |
-| `CHAPAR_MODULE_HPL` | hpl | hpc-challenge |
-| `CHAPAR_MODULE_HPCG` | hpcg | hpc-challenge |
-| `CHAPAR_MODULE_STREAM` | stream | hpc-challenge |
-| `CHAPAR_MODULE_BABELSTREAM` | babelstream | hpc-challenge |
-| `CHAPAR_MODULE_OPENBLAS` | openblas | hpc-challenge |
-| `CHAPAR_MODULE_PY_TORCH` | py-torch | frameworks |
-| `CHAPAR_MODULE_PY_MPI4PY` | py-mpi4py | frameworks |
-| `CHAPAR_MODULE_INTEL_ONEAPI_MPI` | intel-oneapi-mpi | intelmpi-* tests |
-| `CHAPAR_MODULE_CALIPER` | caliper | profiling |
-| `CHAPAR_MODULE_DARSHAN` | darshan-runtime | profiling |
-| `CHAPAR_MODULE_MPIP` | mpip | profiling |
-| `CHAPAR_MODULE_IPM` | ipm | profiling |
-| `CHAPAR_MODULE_EXTRABE` | extrae | profiling |
-| `CHAPAR_MODULE_HPCTOOLKIT` | hpctoolkit | profiling |
-| `CHAPAR_MODULE_TAU` | tau | profiling |
-| `CHAPAR_MODULE_SCOREP` | scorep | profiling |
-| `CHAPAR_MODULE_SCALASCA` | scalasca | profiling |
-| `CHAPAR_MODULE_LIKWID_PROF` | likwid | profiling |
-
-### Resource Overrides
-
-| Variable | Effect | Example |
-|----------|--------|---------|
-| `CHAPAR_PARTITION` | Slurm partition | `CHAPAR_PARTITION=gpu ./validation/run node-smoke` |
-| `CHAPAR_NODES` | Override node count | `CHAPAR_NODES=8 ./validation/run mpi-collective` |
-| `CHAPAR_TIME` | Override time limit | `CHAPAR_TIME=02:00:00 ./validation/run hpc-challenge` |
-
-### Runtime Overrides
-
-| Variable | Effect | Example |
-|----------|--------|---------|
-| `CHAPAR_KEEP_MODULES=1` | Skip `module purge` — use pre-loaded environment | `CHAPAR_KEEP_MODULES=1 ./validation/run node-smoke` |
-| `CHAPAR_DRY_RUN=1` | Print what would run without executing | `CHAPAR_DRY_RUN=1 ./validation/run all` |
-| `RESULTS_ROOT` | Custom results directory | `RESULTS_ROOT=/shared/results ./validation/run node-smoke` |
-
-### MPI RDMA Test Overrides
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MPI_RDMA_BYTES` | 8388608 | Message size in bytes |
-| `MPI_RDMA_ITERS` | 100 | Ring iterations |
-| `MPI_LAUNCHER` | mpirun | MPI launcher command |
-| `MPI_LAUNCHER_ARGS` | (varies by MPI) | Launcher arguments |
-
-### Profiling Test Override
-
-```bash
-# Select a specific profiler
-PROFILER=tau ./validation/run profiling
-PROFILER=scorep ./validation/run profiling
-```
+The node health tests read cluster-specific expectations (IB link manifest,
+expected NCCL transport) from `validation/config/network.yaml`; edit that
+file to match your cluster. The `profiling` suite selects one profiler per
+run via `PROFILER=tau` (inline runs, see above).
 
 ## Results
 
-Each test writes results to `validation/results/<test>/<job-id>/<node>/`. The directory contains per-command output files named after each command.
-
-To analyze results with MAD-based outlier detection:
-
-```bash
-python3 validation/analyze/outliers.py --suite node-smoke --threshold 2.0 \
-  --results-dir validation/results/node-smoke/
+```
+${CHAPAR_VALIDATION_ROOT}/<set>/<target>/<release-id>/<run-id>/<suite>/...
 ```
 
-## Adding a New Test
+One validation-run ID namespaces every suite a single invocation submits.
+Analyze a suite's results with MAD-based outlier detection:
+
+```bash
+uv run chapar validate analyze --suite node-smoke --threshold 2.0 \
+  --results-dir "$CHAPAR_VALIDATION_ROOT/vlad/linux-x86_64-v4/20260809a/<run-id>/node-smoke"
+```
+
+## Adding a new test
 
 1. Create `validation/tests/<name>.sbatch` using an existing test as a template
 2. Start with `# DESCRIPTION: One-line description of what this validates`
 3. Add `#SBATCH` directives for default resources
-4. Set up the results directory (use the standard pattern from existing tests)
-5. Use `CHAPAR_MODULE_<NAME>` variables for module loads
-6. Run commands that write output to `$RESULTS_DIR`
+4. Set up the results directory under `$RESULTS_ROOT` (use the standard
+   pattern from existing tests) and load modules from the release the job
+   receives as `CHAPAR_RELEASE_DIR`
+5. Run commands that write output to `$RESULTS_DIR`
 
 The test passes if it exits 0. Exit code `77` means the test was skipped
 because its hardware requirements are not met on the node (reported as `SKIP`
 by `./validation/run all`, not a failure). Any other non-zero exit is a
 failure.
-
-## Output Artifacts
-
-Results are collected under `validation/results/<test>/<run-id>/<nodelist>/`:
-
-```
-validation/results/
-├── node-smoke/
-│   └── 20260725T120000/
-│       └── node01/
-│           ├── likwid_mem.csv
-│           ├── nvbw.csv
-│           ├── cuda_memtest_gpu0.log
-│           └── ...
-├── ib-pairwise/
-│   └── ...
-└── ...
-```

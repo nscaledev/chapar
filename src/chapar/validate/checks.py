@@ -1,15 +1,17 @@
+"""Per-root module checks for the integrity suites.
+
+The expected inventory is the release-local spack.lock: the concrete roots the
+build actually produced, not what a catalog promised. Each root gets a module
+load plus one root-specific command; a root without a dedicated command falls
+back to `module show`, which still proves the module exists and parses.
+"""
+
 from __future__ import annotations
 
-import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
 
-from tools.chapar_config.models import CatalogRoot
-
-type JsonScalar = str | int | float | bool | None
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
-
-SPEC_NAME: Final = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)")
 CHECK_COMMANDS: Final = {
     "babelstream": ("module show babelstream", "babelstream module"), "caliper": ("cali-query --help", "caliper tool runs"), "cmake": ("cmake --version", "cmake runs"),
     "cuda": ("nvcc --version", "nvcc --version"), "cuda-memtest": ("command -v cuda_memtest", "cuda_memtest on PATH"), "fio": ("fio --version", "fio runs"),
@@ -25,10 +27,6 @@ CHECK_COMMANDS: Final = {
 }
 
 
-class RootInventoryError(Exception):
-    pass
-
-
 @dataclass(frozen=True, slots=True)
 class RootCheck:
     module: str
@@ -36,36 +34,10 @@ class RootCheck:
     description: str
 
 
-def _text(document: dict[str, JsonValue], key: str) -> str:
-    value = document.get(key)
-    if not isinstance(value, str) or not value:
-        raise RootInventoryError(f"missing {key}")
-    return value
-
-
-def canonical_root_checks(
-    selection: dict[str, JsonValue], expected: tuple[CatalogRoot, ...]
-) -> tuple[RootCheck, ...]:
-    raw_roots = selection.get("selected_roots")
-    if not isinstance(raw_roots, list):
-        raise RootInventoryError("selected root inventory is required")
-    actual: list[tuple[str, str, str]] = []
+def root_checks(roots: Iterable[tuple[str, str, str]]) -> tuple[RootCheck, ...]:
+    """One check per concrete (name, version, hash) root from a spack.lock."""
     checks: list[RootCheck] = []
-    for raw_root in raw_roots:
-        if not isinstance(raw_root, dict):
-            raise RootInventoryError("selected root must be an object")
-        identity = _text(raw_root, "id")
-        spec = _text(raw_root, "spec")
-        actual.append((identity, spec, _text(raw_root, "classification")))
-        match = SPEC_NAME.match(spec)
-        if match is None:
-            raise RootInventoryError(f"selected root has no module name: {identity}")
-        module_name = match.group(1)
-        command, description = CHECK_COMMANDS.get(
-            module_name, (f"module show {module_name}", f"{module_name} module")
-        )
-        checks.append(RootCheck(module_name, command, description))
-    canonical = [(root.identity, root.spec, root.classification) for root in expected]
-    if actual != canonical:
-        raise RootInventoryError("selected root inventory differs from canonical catalog")
+    for name, _version, _digest in roots:
+        command, description = CHECK_COMMANDS.get(name, (f"module show {name}", f"{name} module"))
+        checks.append(RootCheck(name, command, description))
     return tuple(checks)

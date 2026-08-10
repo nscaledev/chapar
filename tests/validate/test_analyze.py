@@ -1,24 +1,18 @@
-"""Unit tests for the MAD-based outlier detector."""
+"""Unit tests for the MAD-based outlier detector (`chapar validate analyze`)."""
 
+from __future__ import annotations
+
+import dataclasses
 import json
-import math
-import os
-import sys
 import unittest
 
-# Allow running both as `python3 -m unittest validation/vlad/analyze/test_outliers`
-# from workspace root and `python3 -m unittest test_outliers` from analyze dir.
-_TEST_DIR = os.path.dirname(os.path.abspath(__file__))
-_PARENT = os.path.dirname(_TEST_DIR)
-if _PARENT not in sys.path:
-    sys.path.insert(0, _PARENT)
-
-from analyze.outliers import (  # type: ignore[import-not-found]
+from chapar.validate.analyze import (
     Metric,
+    _robust_zscore,
     compute_flags,
     flags_to_dicts,
-    _robust_zscore,
 )
+from tests.conftest import run_chapar
 
 
 class TestMetricDataclass(unittest.TestCase):
@@ -60,7 +54,7 @@ class TestMetricDataclass(unittest.TestCase):
 
     def test_metric_is_frozen(self):
         m = Metric(node="n", metric_name="x", value=1.0, unit="u")
-        with self.assertRaises(Exception):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             m.value = 2.0  # type: ignore[misc]
 
 
@@ -106,7 +100,10 @@ class TestOsuLatencyOutlier(unittest.TestCase):
         self.assertGreater(summary["nodes_total"], 0)
 
     def test_no_flags_at_very_high_threshold(self):
-        flags, _ = compute_flags(self.metrics, threshold=50.0)
+        # The recorded outlier scores a robust z of ~533, so "very high" must
+        # sit above that. (The pre-move copy of this test used 50.0 and had
+        # always failed; it was never wired into a runner.)
+        flags, _ = compute_flags(self.metrics, threshold=1000.0)
         self.assertEqual(len(flags), 0)
 
     def test_multiple_flags_at_low_threshold(self):
@@ -119,13 +116,10 @@ class TestNvbandwidthP2PPerGpu(unittest.TestCase):
     """4-node × 8-GPU nvbandwidth p2p matrix: one cell at 5σ."""
 
     def setUp(self):
-        # 4 nodes × 8 GPUs × 8 peers = 256 metrics (all-to-all within node)
-        # Actually nvbandwidth p2p is per-node. Let's simulate per-node:
-        # 4 nodes, each with 8 GPUs → 4*8*8 = 256 p2p values per node pair?
-        # No — nvbandwidth runs on one node, tests P2P between its GPUs.
+        # nvbandwidth runs on one node, tests P2P between its GPUs.
         # So 4 nodes × (8×8=64 pairs) = 256 metrics total.
         self.metrics = []
-        # Baseline bandwidth: ~20 GB/s with small random noise
+        # Baseline bandwidth: ~20 GB/s with small deterministic noise
         for node_idx in range(4):
             node_name = f"node{node_idx:02d}"
             for gpu in range(8):
@@ -155,7 +149,7 @@ class TestNvbandwidthP2PPerGpu(unittest.TestCase):
         )
 
     def test_flags_pinpoint_gpu_index_3_and_peer_gpu_index_populated(self):
-        flags, summary = compute_flags(self.metrics, threshold=2.0)
+        flags, _summary = compute_flags(self.metrics, threshold=2.0)
         self.assertEqual(
             len(flags), 1,
             f"Expected exactly 1 flag, got {len(flags)}: {flags}"
@@ -291,6 +285,40 @@ class TestMultiGroupAggregation(unittest.TestCase):
         # Each is its own group with 1 element → MAD=0 → no flags
         self.assertEqual(len(flags), 0)
         self.assertEqual(summary["groups_analyzed"], 2)
+
+
+class TestAnalyzeCli(unittest.TestCase):
+    """The `chapar validate analyze` surface keeps the outliers.py contract."""
+
+    def test_missing_results_dir_reports_and_exits_zero(self):
+        # "No results yet" must not fail a collector that runs unconditionally.
+        result = run_chapar(
+            "validate", "analyze", "--suite", "node-smoke", "--results-dir", "/nonexistent/results"
+        )
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertIn("results directory not found", result.stderr)
+
+    def test_empty_results_dir_produces_warning_json(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as results_dir:
+            result = run_chapar(
+                "validate", "analyze", "--suite", "transport", "--results-dir", results_dir
+            )
+            self.assertEqual(result.exit_code, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["flags"], [])
+            self.assertIn("warning", report["summary"])
+
+    def test_prometheus_format_emits_gauges(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as results_dir:
+            result = run_chapar(
+                "validate", "analyze", "--suite", "io", "--results-dir", results_dir, "--prometheus"
+            )
+            self.assertEqual(result.exit_code, 0, result.stderr)
+            self.assertIn('chapar_outlier_count{suite="io"', result.stdout)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,9 @@ expect_invalid_runner() {
 expect_invalid "${fixtures}/legacy-node-smoke-summary.json"
 expect_runner_valid "${fixtures}/pass.json"
 expect_valid "${fixtures}/warn.json"
+# Evidence may name the immutable release it ran against, but never half of
+# one: a release block missing any identity field is refused.
+expect_invalid "${fixtures}/partial-release-identity.json"
 expect_valid "${fixtures}/threshold-fail.json"
 expect_valid "${fixtures}/optional-skip.json"
 expect_valid "${fixtures}/mandatory-unavailable.json"
@@ -137,6 +140,64 @@ assert document["verdict"] == "PASS", document
 assert document["command_exit_code"] == 0, document
 assert document["provenance"] == {"mode": "manual", "ci_authoritative": False}, document
 PY
+
+# A suite handed a release directory records its identity: metadata tuple plus
+# the run-time digest of the release-local lock bytes.
+release_fixture="${temporary}/release/rel-fixture-001"
+mkdir -p "${release_fixture}"
+printf '{"roots": []}\n' > "${release_fixture}/spack.lock"
+python3 - "${release_fixture}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+release = Path(sys.argv[1])
+metadata = {
+    "identity": {
+        "software_set": "vlad",
+        "target": "linux-x86_64-v4",
+        "release_id": "rel-fixture-001",
+        "run_id": "run-001",
+    },
+}
+(release / "metadata.json").write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+PY
+(
+    VALIDATION_RESULT_MODE=manual
+    unset VALIDATION_RUN_ID VALIDATION_RUN_ISSUED_AT
+    CHAPAR_RELEASE_DIR="${release_fixture}"
+    validation_result_init gpu-topology "${temporary}" node01
+    printf '%s\n' "${VALIDATION_RUN_DIR}" > "${temporary}/release-run-dir"
+    trap - EXIT
+    validation_result_finalize 0
+) || { printf 'finalize with a release directory did not exit 0\n' >&2; exit 1; }
+release_dir="$(cat "${temporary}/release-run-dir")"
+validation_result_validate_manifest "${release_dir}/suite-manifest.json"
+python3 - "${release_dir}/suite-manifest.json" "${release_fixture}/spack.lock" <<'PY'
+import hashlib
+import json
+import sys
+document = json.load(open(sys.argv[1]))
+release = document["release"]
+assert release["software_set"] == "vlad", document
+assert release["target"] == "linux-x86_64-v4", document
+assert release["release_id"] == "rel-fixture-001", document
+assert release["run_id"] == "run-001", document
+expected = hashlib.sha256(open(sys.argv[2], "rb").read()).hexdigest()
+assert release["release_lock_sha256"] == expected, document
+PY
+
+# A release directory that cannot be described is a broken handshake, never a
+# silent omission.
+(
+    VALIDATION_RESULT_MODE=manual
+    unset VALIDATION_RUN_ID VALIDATION_RUN_ISSUED_AT
+    CHAPAR_RELEASE_DIR="${temporary}/no-such-release"
+    if validation_result_init gpu-topology "${temporary}" node01 2>/dev/null; then
+        printf 'an undescribable release directory was unexpectedly accepted\n' >&2
+        exit 1
+    fi
+)
 
 # A suite that exits 77 without recording a verdict is SKIP, not PASS.
 (
