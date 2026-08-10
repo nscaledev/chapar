@@ -1,12 +1,15 @@
+"""Optional OSV batch queries for explicitly configured ecosystems. Stdlib only."""
+
 from __future__ import annotations
 
 import json
 import urllib.request
 from typing import Final
 
-from .http_client import urlopen_json
-from .models import Finding, JsonObject, Package
-from .nvd import severity_allowed
+from chapar.common.jsonio import JsonObject
+from chapar.cve.http_client import urlopen_json
+from chapar.cve.models import Finding, Package
+from chapar.cve.nvd import severity_allowed
 
 OSV_BATCH_API: Final = "https://api.osv.dev/v1/querybatch"
 

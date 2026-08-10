@@ -1,11 +1,13 @@
+"""Optional Nemotron (OpenAI-compatible) summaries for confirmed findings. Stdlib only."""
+
 from __future__ import annotations
 
 import json
 import os
 import urllib.request
 
-from .http_client import HttpRequestError, urlopen_json
-from .models import Finding
+from chapar.cve.http_client import HttpRequestError, urlopen_json
+from chapar.cve.models import Finding
 
 
 def nemotron_endpoint(base_url: str) -> str:

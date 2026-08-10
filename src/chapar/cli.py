@@ -35,7 +35,9 @@ def build_parser() -> argparse.ArgumentParser:
     from chapar.validate.cli import register as register_validate
 
     register_validate(subparsers)
-    # marker:cve-group
+    from chapar.cve.cli import register as register_cve
+
+    register_cve(subparsers)
     return parser
 
 

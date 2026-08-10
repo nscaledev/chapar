@@ -1,3 +1,5 @@
+"""GitHub issue creation with marker-based deduplication. Stdlib only."""
+
 from __future__ import annotations
 
 import json
@@ -5,15 +7,16 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
-from .http_client import HttpRequestError, urlopen_json
-from .models import Finding, JsonObject, JsonValue, SelectionPolicy
+from chapar.common.jsonio import JsonObject, JsonValue
+from chapar.cve.http_client import HttpRequestError, urlopen_json
+from chapar.cve.models import Finding, ReleasePolicy
 
 
 @dataclass(frozen=True, slots=True)
 class GitHubIssueTarget:
     repo: str
     token: str
-    policy: SelectionPolicy
+    policy: ReleasePolicy
     base_labels: tuple[str, ...]
 
 
@@ -51,7 +54,7 @@ def issue_title(finding: Finding) -> str:
     return f"[CVE checker] {finding.package.label}: {finding.cve_id} {finding.severity}"
 
 
-def issue_body(finding: Finding, policy: SelectionPolicy) -> str:
+def issue_body(finding: Finding, policy: ReleasePolicy) -> str:
     references = "\n".join(f"- {reference}" for reference in finding.references) or "- None listed by source"
     nemotron = finding.nemotron_summary or "Nemotron summary was not configured or failed; see source evidence below."
     score = "unknown" if finding.score is None else str(finding.score)
@@ -59,10 +62,11 @@ def issue_body(finding: Finding, policy: SelectionPolicy) -> str:
 ## Summary
 {nemotron}
 
-## Selection
-- Data center: `{policy.datacenter}`
+## Release
 - Software set: `{policy.software_set}`
 - Target: `{policy.target}`
+- Release: `{policy.release_id}`
+- Run: `{policy.run_id}`
 
 ## Package
 - Package: `{finding.package.name}`

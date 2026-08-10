@@ -1,11 +1,10 @@
+"""Data model for the CVE checker. Stdlib only."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Final, TypeAlias
+from typing import Final
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
 SEVERITY_ORDER: Final = {
     "NONE": 0,
     "LOW": 1,
@@ -28,16 +27,20 @@ class Package:
 
 
 @dataclass(frozen=True, slots=True)
-class SelectionPolicy:
-    datacenter: str
+class ReleasePolicy:
+    """Identity of the verified release the scanned inventory came from."""
+
     software_set: str
     target: str
+    release_id: str
+    run_id: str
 
     def as_json(self) -> dict[str, str]:
         return {
-            "datacenter": self.datacenter,
             "software_set": self.software_set,
             "target": self.target,
+            "release_id": self.release_id,
+            "run_id": self.run_id,
         }
 
 

@@ -1,3 +1,5 @@
+"""NVD keyword queries and deterministic package matching. Stdlib only."""
+
 from __future__ import annotations
 
 import datetime as dt
@@ -8,8 +10,9 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Final
 
-from .http_client import urlopen_json
-from .models import SEVERITY_ORDER, Finding, JsonObject, JsonValue, Package
+from chapar.common.jsonio import JsonObject, JsonValue
+from chapar.cve.http_client import urlopen_json
+from chapar.cve.models import SEVERITY_ORDER, Finding, Package
 
 NVD_API: Final = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
@@ -147,7 +150,7 @@ def fetch_nvd_findings(
     options: NvdQueryOptions,
 ) -> list[Finding]:
     findings: dict[str, Finding] = {}
-    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    now = dt.datetime.now(dt.UTC).replace(tzinfo=None)
     params_base = {"resultsPerPage": str(config.get("max_results_per_query", 100))}
     if options.lookback_days > 0:
         start = now - dt.timedelta(days=options.lookback_days)
